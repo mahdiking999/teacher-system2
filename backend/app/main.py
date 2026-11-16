@@ -64,8 +64,9 @@ from .services.export_service import (
     verify_exported_file_structure,
 )
 from .services.seed_service import ensure_initial_seed_data, get_default_five_stage_phases
+from .services.migration_and_backup import export_database_backup_dict, restore_database_backup_dict
 
-STORAGE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "storage"))
+STORAGE_ROOT = os.path.abspath(os.getenv("STORAGE_ROOT", os.path.join(os.path.dirname(__file__), "..", "storage")))
 UPLOADS_DIR = os.path.join(STORAGE_ROOT, "uploads")
 EXPORTS_DIR = os.path.join(STORAGE_ROOT, "exports")
 os.makedirs(UPLOADS_DIR, exist_ok=True)
@@ -116,12 +117,35 @@ else:
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    try:
+        ensure_initial_seed_data(db)
+    finally:
+        db.close()
 
 
 @app.middleware("http")
 async def request_id_and_security_middleware(request: Request, call_next):
     req_id = request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:10]}"
     request.state.request_id = req_id
+    pilot_pin = os.getenv("PILOT_ACCESS_PIN", "").strip()
+    if pilot_pin and request.url.path.startswith("/api/") and request.method in ("POST", "PUT", "PATCH", "DELETE"):
+        provided_pin = (
+            request.headers.get("X-Pilot-Pin")
+            or request.query_params.get("pin")
+            or ""
+        ).strip()
+        if provided_pin != pilot_pin:
+            return JSONResponse(
+                status_code=401,
+                headers={"X-Request-ID": req_id},
+                content={
+                    "error": True,
+                    "code": "PILOT_PIN_REQUIRED",
+                    "message": "يتطلب إجراء التعديل إدخال رمز الوصول التجريبي (X-Pilot-Pin).",
+                    "requestId": req_id,
+                },
+            )
     try:
         response = await call_next(request)
         response.headers["X-Request-ID"] = req_id
@@ -1866,6 +1890,21 @@ def download_exported_file(
             "X-Plan-Version": str(task.plan_version),
         },
     )
+
+
+@app.get("/api/system/backup")
+def get_system_backup():
+    return export_database_backup_dict()
+
+
+@app.post("/api/system/restore")
+def post_system_restore(payload: dict):
+    if not isinstance(payload, dict) or payload.get("backupVersion") != "1.0":
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_BACKUP_PAYLOAD", "message": "ملف النسخة الاحتياطية غير صالح."},
+        )
+    return restore_database_backup_dict(payload)
 
 
 if __name__ == "__main__":

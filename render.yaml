@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: teacher-system2
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: ENABLE_DEMO_SEED
+        value: "1"
+      - key: DATA_DIR
+        value: "/app/data"
+      - key: STORAGE_ROOT
+        value: "/app/backend/storage"
+      - key: INTERNAL_API_URL
+        value: "http://127.0.0.1:8000"
+      - key: PILOT_ACCESS_PIN
+        value: ""

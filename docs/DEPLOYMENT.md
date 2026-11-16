@@ -53,12 +53,27 @@ npm run start
 
 - **توليد وفحص ترحيلات PostgreSQL وSQLite:**
   يوفّر الملف [`backend/app/services/migration_and_backup.py`](../backend/app/services/migration_and_backup.py) دالة `generate_postgresql_and_sqlite_ddl()` التي تصدّر DDL الكامل المتوافق مع PostgreSQL (`TIMESTAMP WITH TIME ZONE`، `FOREIGN KEY ... ON DELETE CASCADE`، `JSON`) وSQLite، ويتم اختبارها آليًا في [`backend/tests/test_migrations_and_backup.py`](../backend/tests/test_migrations_and_backup.py).
-- **النسخ الاحتياطي (Backup):**
-  استدعاء `create_database_backup_json("backups/backup_YYYYMMDD.json")` يحفظ نسخة JSON كاملة لجميع السياقات والخطط والإصدارات والمصادر.
+- **النسخ الاحتياطي والاستعادة (Backup & Restore):**
+  - عبر الكود: استدعاء `create_database_backup_json("backups/backup_YYYYMMDD.json")` يحفظ نسخة JSON كاملة لجميع السياقات والخطط والإصدارات والمصادر.
+  - عبر واجهة API المباشرة أثناء التشغيل:
+    - تنزيل نسخة احتياطية فورية: `GET /api/system/backup`
+    - استعادة نسخة احتياطية: `POST /api/system/restore` (يحفظ السياقات ويعيد بناءها فورًا).
 
 ---
 
-## 5. حدود بيئة التنفيذ الحالية (Environment Boundary Disclosure)
+## 5. النشر المجاني الموحّد على Render (Render Free Tier Blueprint)
+
+لتفادي أخطاء مهلة التشغيل البارد (502 Cold-Start) بين خدمتين مجانيتين منفصلتين والبقاء ضمن سقف **512 MB RAM** في خطة Render المجانية:
+1. يجمع ملف [`Dockerfile`](../Dockerfile) كلًّا من **FastAPI (`127.0.0.1:8000`)** و**Next.js Standalone (`0.0.0.0:$PORT`)** في حاوية واحدة عبر [`scripts/start_prod.sh`](../scripts/start_prod.sh).
+2. يتم تفعيل وضع **SQLite WAL** مع `busy_timeout=5000` تلقائيًا في [`backend/app/database.py`](../backend/app/database.py) وتفعيل البيانات التجريبية التلقائية عند التشغيل الأول (`ENABLE_DEMO_SEED=1`).
+3. خطوات الإطلاق في 3 نقرات:
+   1. ادفع التحديثات إلى فرع `main` على GitHub.
+   2. افتح **Render Dashboard → Blueprints → New Blueprint Instance** واختر مستودع `mahdiking999/teacher-system2` (سيقرأ ملف [`render.yaml`](../render.yaml) تلقائيًا).
+   3. اضغط **Apply** — وبمجرد جاهزية الخدمة، افتح الرابط العام للمعلمين (يمكنك تعيين `PILOT_ACCESS_PIN` في متغيرات البيئة على Render لقفل التعديلات برمز تجريبي أو تركه فارغًا للإتاحة المفتوحة).
+
+---
+
+## 6. حدود بيئة التنفيذ والتطوير المحلي
 
 - تعمل بيئة التنفيذ الحالية داخل وضع معزول شبكيًا (No external cloud credentials or remote hosting tokens configured).
 - لذلك تم تجهيز:
