@@ -3,9 +3,9 @@
 - **Repository:** `https://github.com/mahdiking999/teacher-system2` (`main` branch)
 - **Target Platform:** Render Free Tier (`plan: free`, unified Docker Web Service + Free PostgreSQL)
 - **Database Mode:** Render Free PostgreSQL (`teacher-system2-db`) in production; SQLite (WAL mode) locally, with `ENABLE_DEMO_SEED=1`
-- **Updated At:** 2026-11-17T00:13:00+03:00
+- **Updated At:** 2026-11-17T00:58:00+03:00
 - **Live URL:** `https://teachersys.onrender.com` (PostgreSQL `teacher-system2-db`)
-- **Current Owner:** Ready for **Kilo Code** pickup & **Batch 6 (User Auth + Render AI env wiring)**
+- **Current Owner:** Ready for **Kilo Code** pickup, Render auto-deploy of Teacher-Readiness Audit fixes, & **Batch 6 (User Auth)**
 
 ---
 
@@ -20,7 +20,8 @@
 | **Step 5** | Update `frontend/next.config.mjs` (`output: "standalone"`) & slim `requirements.txt` | `DONE` | Added `@types/node` to `frontend/package.json` |
 | **Step 6** | Create `Dockerfile`, `scripts/start_prod.sh`, `render.yaml` (with `teacher-system2-db` PostgreSQL & service name `teachersys`), `.dockerignore` & update `docs/DEPLOYMENT.md` | `DONE` | Live at `https://teachersys.onrender.com` (`databaseDialect: postgresql`) |
 | **Step 7 (Batch 5)** | Add real Arabic `PyMuPDF` PDF extraction + PNG rendering, `ai_service.py` (OmniRoute / NVIDIA NIM), AI endpoints & UI buttons (`/presentations`, `/sources`, `/daily-plan`), update partner docs | `DONE` | **21/21 pytest passed**, live OmniRoute slide + Vision OCR verified, **15/15 Next.js routes built** (`handoff/verification_test_output.log`) |
-| **Step 8** | Commit & push all Batch 5 changes to `origin/main` | `DONE` | Synced with `mahdiking999/teacher-system2` (`main`) |
+| **Step 8** | Commit & push all Batch 5 changes to `origin/main` | `DONE` | Synced with `mahdiking999/teacher-system2` (`main`, `7bd209a`) |
+| **Step 9 (Batch 5.5)** | Multi-agent Teacher-Readiness Audit & fixes: `pymupdf.Story` RTL PDF export, PPTX comparison/continuation, AI JSON/minutes hardening, cross-context & backup/restore isolation, 13-screen frontend UX fixes, `docs/TEACHER_READINESS_AUDIT.md` | `DONE` | **26/26 pytest passed in 1.79s**, `tsc --noEmit` exit `0`, **15/15 Next.js routes built** (`handoff/verification_test_output.log`) |
 
 ---
 

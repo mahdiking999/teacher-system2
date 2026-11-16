@@ -4,32 +4,47 @@ import React, { useEffect, useState } from "react";
 import Link from "next/link";
 import { useTeacherApp } from "../components/AppShell";
 
+function formatPlanStatusLabel(status?: string) {
+  if (status === "approved") return "معتمدة";
+  if (status === "reviewed") return "مكتملة المراجعة";
+  if (status === "needs_revision") return "تقويم ناقص / تحتاج تعديلًا";
+  return "مسودة";
+}
+
+function formatPlanStatusBadgeClass(status?: string) {
+  if (status === "approved" || status === "reviewed") return "badge-success";
+  if (status === "needs_revision") return "badge-blocker";
+  return "badge-neutral";
+}
+
 export default function DashboardPage() {
   const { activeContext, activeContextId, apiFetch } = useTeacherApp();
   const [summary, setSummary] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(true);
+  const [errorMsg, setErrorMsg] = useState<string>("");
 
   useEffect(() => {
-    let mounted = true;
+    let cancelled = false;
+    setSummary(null);
+    setErrorMsg("");
     async function load() {
       setLoading(true);
       try {
         const res = await apiFetch(`/api/dashboard?contextId=${encodeURIComponent(activeContextId)}`);
-        if (mounted) setSummary(res);
-      } catch (e) {
-        console.error(e);
+        if (!cancelled) setSummary(res);
+      } catch (e: any) {
+        if (!cancelled) setErrorMsg(e?.message || "تعذر تحميل بيانات لوحة المعلم.");
       } finally {
-        if (mounted) setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
     if (activeContextId) {
       load();
     } else {
       setLoading(false);
-      setSummary(null);
     }
     return () => {
-      mounted = false;
+      cancelled = true;
     };
   }, [activeContextId, apiFetch]);
 
@@ -39,6 +54,17 @@ export default function DashboardPage() {
     totalPlansCount: 0,
     reviewedCount: 0,
     exportsCount: 0,
+  };
+
+  const resolveTaskRoute = (t: any) => {
+    const raw = t.targetRoute || "/review";
+    if (raw.startsWith("/daily-plan?planId=")) {
+      const pid = raw.split("planId=")[1];
+      const matched = summary?.recentPlans?.find((p: any) => p.id === pid);
+      if (matched?.planType === "weekly") return `/weekly-plan?planId=${encodeURIComponent(pid)}`;
+      if (matched?.planType === "five_day") return `/five-day-plan?planId=${encodeURIComponent(pid)}`;
+    }
+    return raw;
   };
 
   return (
@@ -53,9 +79,15 @@ export default function DashboardPage() {
 
       <div className="info-banner">
         <span>
-          ⓘ جميع الإحصاءات أدناه مشتقة حيًّا من قاعدة البيانات للسياق النشط ({activeContext?.id || "—"}) وليست أرقامًا ثابتة.
+          ⓘ جميع الإحصاءات أدناه مشتقة حيًّا من قاعدة البيانات للسياق النشط ({activeContext?.subject || "—"} · {activeContext?.grade || "—"}) وليست أرقامًا ثابتة.
         </span>
       </div>
+
+      {errorMsg && (
+        <div className="blocker-banner">
+          <span>⛔ {errorMsg}</span>
+        </div>
+      )}
 
       {/* Hero Welcome Banner matching `لوحة المعلم.png` */}
       <div className="hero-banner-card">
@@ -107,7 +139,11 @@ export default function DashboardPage() {
             ترتيب مقترح لإنهاء المسودات وفصل عوائق الاعتماد عن توثيق المصدر
           </p>
 
-          {(!summary?.todayTasks || summary.todayTasks.length === 0) ? (
+          {loading ? (
+            <div style={{ textAlign: "center", padding: "26px 12px", color: "var(--text-secondary)" }}>
+              جارٍ تحميل مهام السياق...
+            </div>
+          ) : !summary?.todayTasks || summary.todayTasks.length === 0 ? (
             <div style={{ textAlign: "center", padding: "26px 12px", color: "var(--text-secondary)" }}>
               <p style={{ marginBottom: "12px", fontSize: "0.9rem" }}>لا توجد مهام معلّقة حاليًا. بيئة العمل جاهزة لإعداد أول خطة.</p>
               <Link href="/daily-plan" className="btn btn-primary" style={{ fontSize: "0.84rem" }}>
@@ -123,6 +159,7 @@ export default function DashboardPage() {
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "space-between",
+                    flexWrap: "wrap",
                     padding: "12px 14px",
                     borderRadius: "10px",
                     border: "1px solid var(--border-subtle)",
@@ -130,9 +167,9 @@ export default function DashboardPage() {
                     gap: "12px",
                   }}
                 >
-                  <div>
+                  <div style={{ minWidth: 0, flex: "1 1 200px" }}>
                     <div style={{ fontWeight: 700, fontSize: "0.92rem" }}>
-                      <Link href={t.targetRoute || "/review"} style={{ color: "inherit", textDecoration: "none" }}>
+                      <Link href={resolveTaskRoute(t)} style={{ color: "inherit", textDecoration: "none" }}>
                         {t.title}
                       </Link>
                     </div>
@@ -157,7 +194,9 @@ export default function DashboardPage() {
 
         <div className="card">
           <h3 style={{ fontSize: "1.1rem", fontWeight: 800, marginBottom: "8px" }}>حالة مصدر المنهج</h3>
-          {summary?.sources && summary.sources.length > 0 ? (
+          {loading ? (
+            <div style={{ padding: "18px 0", color: "var(--text-secondary)", fontSize: "0.85rem" }}>جارٍ التحميل...</div>
+          ) : summary?.sources && summary.sources.length > 0 ? (
             <div>
               <span
                 className={`badge ${
@@ -204,7 +243,11 @@ export default function DashboardPage() {
             جميع السجلات أدناه معزولة ضمن السياق النشط ({activeContext?.subject || "—"} · {activeContext?.grade || "—"})
           </p>
 
-          {(!summary?.recentPlans || summary.recentPlans.length === 0) ? (
+          {loading ? (
+            <div style={{ textAlign: "center", padding: "26px 14px", color: "var(--text-secondary)" }}>
+              جارٍ تحميل الخطط...
+            </div>
+          ) : !summary?.recentPlans || summary.recentPlans.length === 0 ? (
             <div style={{ textAlign: "center", padding: "34px 14px", color: "var(--text-secondary)" }}>
               <p style={{ marginBottom: "12px", fontSize: "0.92rem" }}>
                 لا توجد خطط محفوظة بعد في سياق ({activeContext?.subject || "المادة المحددة"}).
@@ -231,10 +274,10 @@ export default function DashboardPage() {
                         <Link
                           href={
                             p.planType === "five_day"
-                              ? `/five-day-plan?planId=${p.id}`
+                              ? `/five-day-plan?planId=${encodeURIComponent(p.id)}`
                               : p.planType === "weekly"
-                              ? `/weekly-plan?planId=${p.id}`
-                              : `/daily-plan?planId=${p.id}`
+                              ? `/weekly-plan?planId=${encodeURIComponent(p.id)}`
+                              : `/daily-plan?planId=${encodeURIComponent(p.id)}`
                           }
                           style={{ color: "var(--text-main)", textDecoration: "none" }}
                         >
@@ -250,22 +293,8 @@ export default function DashboardPage() {
                       </td>
                       <td>{p.planningDate || "—"}</td>
                       <td>
-                        <span
-                          className={`badge ${
-                            p.status === "approved" || p.status === "reviewed"
-                              ? "badge-success"
-                              : p.status === "needs_revision"
-                              ? "badge-blocker"
-                              : "badge-neutral"
-                          }`}
-                        >
-                          {p.status === "approved"
-                            ? "معتمدة"
-                            : p.status === "reviewed"
-                            ? "مكتملة المراجعة"
-                            : p.status === "needs_revision"
-                            ? "تقويم ناقص / تحتاج تعديلًا"
-                            : "مسودة"}
+                        <span className={`badge ${formatPlanStatusBadgeClass(p.status)}`}>
+                          {formatPlanStatusLabel(p.status)}
                         </span>
                       </td>
                     </tr>
@@ -288,7 +317,11 @@ export default function DashboardPage() {
             آخر العمليات والملفات المولّدة في هذا السياق
           </p>
 
-          {(!summary?.recentPlans || summary.recentPlans.length === 0) && (!summary?.recentExports || summary.recentExports.length === 0) ? (
+          {loading ? (
+            <div style={{ textAlign: "center", padding: "20px 12px", color: "var(--text-secondary)" }}>جارٍ التحميل...</div>
+          ) : (!summary?.recentPlans || summary.recentPlans.length === 0) &&
+            (!summary?.recentExports || summary.recentExports.length === 0) &&
+            (!activeContext?.selectedTools || activeContext.selectedTools.length === 0) ? (
             <div style={{ textAlign: "center", padding: "26px 12px", color: "var(--text-secondary)" }}>
               <p style={{ fontSize: "0.85rem" }}>لا يوجد نشاط مسجّل بعد في هذا السياق.</p>
             </div>
@@ -303,19 +336,23 @@ export default function DashboardPage() {
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: "8px",
                   }}
                 >
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: "0.86rem" }}>أحدث مسودة خطة</div>
+                  <div style={{ minWidth: 0, flex: "1 1 160px" }}>
+                    <div style={{ fontWeight: 700, fontSize: "0.86rem" }}>أحدث خطة محفوظة</div>
                     <div style={{ fontSize: "0.76rem", color: "var(--text-secondary)" }}>
-                      {summary.recentPlans[0].title} · محفوظة في قاعدة البيانات
+                      {summary.recentPlans[0].title} · الإصدار v{summary.recentPlans[0].version}
                     </div>
                   </div>
-                  <span className="badge badge-neutral">مسودة</span>
+                  <span className={`badge ${formatPlanStatusBadgeClass(summary.recentPlans[0].status)}`}>
+                    {formatPlanStatusLabel(summary.recentPlans[0].status)}
+                  </span>
                 </div>
               )}
 
-              {activeContext?.selectedTools && (
+              {activeContext?.selectedTools && activeContext.selectedTools.length > 0 && (
                 <div
                   style={{
                     padding: "10px 12px",
@@ -324,9 +361,11 @@ export default function DashboardPage() {
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: "8px",
                   }}
                 >
-                  <div>
+                  <div style={{ minWidth: 0, flex: "1 1 160px" }}>
                     <div style={{ fontWeight: 700, fontSize: "0.86rem" }}>
                       اختيار {activeContext.selectedTools.length} وسائل تعليمية
                     </div>
@@ -348,10 +387,12 @@ export default function DashboardPage() {
                     display: "flex",
                     justifyContent: "space-between",
                     alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: "8px",
                   }}
                 >
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: "0.84rem" }}>{ex.fileName}</div>
+                  <div style={{ minWidth: 0, flex: "1 1 160px" }}>
+                    <div style={{ fontWeight: 700, fontSize: "0.84rem", overflowWrap: "anywhere" }}>{ex.fileName}</div>
                     <div style={{ fontSize: "0.74rem", color: "var(--text-secondary)" }}>
                       الإصدار v{ex.planVersion} · {(ex.fileSize / 1024).toFixed(1)} KB
                     </div>
@@ -372,4 +413,3 @@ export default function DashboardPage() {
     </div>
   );
 }
-

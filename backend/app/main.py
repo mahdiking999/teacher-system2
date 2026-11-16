@@ -6,7 +6,7 @@ import re
 import uuid
 import zipfile
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import (
     FastAPI,
@@ -597,6 +597,7 @@ def create_template(
         "periodsCount": tpl.periods_count,
         "periodMinutes": tpl.period_minutes,
         "phases": tpl.phases,
+        "version": tpl.version,
     }
 
 
@@ -706,6 +707,16 @@ def update_source_metadata(
             detail={"code": "SOURCE_NOT_FOUND_IN_CONTEXT", "message": "المصدر غير موجود ضمن هذا السياق."},
         )
 
+    if payload.expectedVersion is not None and payload.expectedVersion != src.version:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "VERSION_CONFLICT",
+                "message": "تم تعديل بيانات المصدر في نسخة أحدث.",
+                "currentVersion": src.version,
+            },
+        )
+
     src.title = payload.title.strip()
     src.book_year = payload.bookYear.strip()
     src.edition = payload.edition.strip()
@@ -736,6 +747,12 @@ def update_source_metadata(
 
     src.version += 1
     src.updated_at = utcnow()
+    # Re-audit existing plans linked to this source so verification updates clear SOURCE_PENDING_VERIFICATION
+    linked_plans = db.query(Plan).filter(Plan.source_id == src.id, Plan.context_id == payload.contextId).all()
+    ctx_obj = db.query(EducationalContext).filter(EducationalContext.id == payload.contextId).first()
+    for lp in linked_plans:
+        if lp.status != "approved" and ctx_obj:
+            _save_plan_version_and_review(db, lp, ctx_obj)
     db.commit()
     db.refresh(src)
     return serialize_source(src, include_details=True)
@@ -856,6 +873,17 @@ def create_lesson(
                 status_code=400,
                 detail={"code": "CROSS_CONTEXT_SOURCE_FORBIDDEN", "message": "لا يجوز ربط درس بمصدر من سياق مختلف."},
             )
+    if payload.chapterId:
+        ch = (
+            db.query(Chapter)
+            .filter(Chapter.id == payload.chapterId, Chapter.context_id == payload.contextId)
+            .first()
+        )
+        if not ch:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "CROSS_CONTEXT_CHAPTER_FORBIDDEN", "message": "لا يجوز ربط درس بفصل من سياق مختلف."},
+            )
 
     prov = (
         "مرتبط بصفحة موثقة من المصدر"
@@ -913,6 +941,17 @@ def update_lesson(
             raise HTTPException(
                 status_code=400,
                 detail={"code": "CROSS_CONTEXT_SOURCE_FORBIDDEN", "message": "لا يجوز ربط درس بمصدر من سياق مختلف."},
+            )
+    if payload.chapterId:
+        ch = (
+            db.query(Chapter)
+            .filter(Chapter.id == payload.chapterId, Chapter.context_id == payload.contextId)
+            .first()
+        )
+        if not ch:
+            raise HTTPException(
+                status_code=400,
+                detail={"code": "CROSS_CONTEXT_CHAPTER_FORBIDDEN", "message": "لا يجوز ربط درس بفصل من سياق مختلف."},
             )
 
     les.source_id = payload.sourceId
@@ -981,11 +1020,17 @@ def duplicate_lesson(
 # ==============================================================================
 
 @app.post("/api/tools/execute")
-def execute_subject_tool(payload: SubjectToolRequest, db: Session = Depends(get_db)):
+def execute_subject_tool(
+    payload: SubjectToolRequest,
+    x_active_context_id: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    verify_active_context_guard(payload.contextId, x_active_context_id)
     ctx = db.query(EducationalContext).filter(EducationalContext.id == payload.contextId).first()
-    subject_name = ctx.subject if ctx else ""
+    if not ctx:
+        raise HTTPException(status_code=404, detail={"code": "CONTEXT_NOT_FOUND", "message": "السياق غير موجود."})
     result = run_subject_tool(
-        subject=subject_name,
+        subject=ctx.subject,
         tool_type=payload.toolType,
         title=payload.title,
         inputs=payload.inputs,
@@ -1118,6 +1163,20 @@ def get_plan(plan_id: str, contextId: str = Query(...), db: Session = Depends(ge
     return serialize_plan(pln)
 
 
+def _compute_total_allocated_minutes(plan_type: str, periods_count: int, period_minutes: int, schedule_days: list) -> int:
+    if plan_type != "daily" and schedule_days:
+        total = 0
+        for d in schedule_days:
+            if isinstance(d, dict) and not d.get("isHoliday"):
+                try:
+                    total += max(0, int(float(d.get("minutes") if d.get("minutes") is not None else period_minutes)))
+                except (ValueError, TypeError):
+                    total += period_minutes
+        if total > 0:
+            return total
+    return periods_count * period_minutes
+
+
 @app.post("/api/plans", status_code=201)
 def create_plan(
     payload: PlanCreate,
@@ -1179,7 +1238,9 @@ def create_plan(
         lessons_count=payload.lessonsCount,
         periods_count=payload.periodsCount,
         period_minutes=payload.periodMinutes,
-        total_allocated_minutes=payload.periodsCount * payload.periodMinutes,
+        total_allocated_minutes=_compute_total_allocated_minutes(
+            payload.planType, payload.periodsCount, payload.periodMinutes, payload.scheduleDays
+        ),
         objectives=payload.objectives,
         prior_knowledge=payload.priorKnowledge,
         teacher_role=payload.teacherRole,
@@ -1255,6 +1316,18 @@ def update_plan(
                 },
             )
 
+    for lid in [payload.primaryLessonId, payload.secondaryLessonId]:
+        if lid:
+            les = db.query(Lesson).filter(Lesson.id == lid, Lesson.context_id == payload.contextId).first()
+            if not les:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "code": "CROSS_CONTEXT_LESSON_FORBIDDEN",
+                        "message": "عزل السياقات: لا يجوز ربط خطة بدرس ينتمي إلى سياق آخر.",
+                    },
+                )
+
     ctx = db.query(EducationalContext).filter(EducationalContext.id == payload.contextId).first()
 
     # Any substantive edit after approval revokes approval on the new version while keeping the previous approved version in `plan_versions`!
@@ -1270,7 +1343,9 @@ def update_plan(
     pln.lessons_count = payload.lessonsCount
     pln.periods_count = payload.periodsCount
     pln.period_minutes = payload.periodMinutes
-    pln.total_allocated_minutes = payload.periodsCount * payload.periodMinutes
+    pln.total_allocated_minutes = _compute_total_allocated_minutes(
+        payload.planType, payload.periodsCount, payload.periodMinutes, payload.scheduleDays
+    )
     pln.objectives = payload.objectives
     pln.prior_knowledge = payload.priorKnowledge
     pln.teacher_role = payload.teacherRole
@@ -1307,7 +1382,13 @@ def update_plan(
 
 
 @app.post("/api/plans/{plan_id}/audit")
-def run_plan_audit_endpoint(plan_id: str, contextId: str = Query(...), db: Session = Depends(get_db)):
+def run_plan_audit_endpoint(
+    plan_id: str,
+    contextId: str = Query(...),
+    x_active_context_id: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    verify_active_context_guard(contextId, x_active_context_id)
     pln = db.query(Plan).filter(Plan.id == plan_id, Plan.context_id == contextId).first()
     if not pln:
         raise HTTPException(status_code=404, detail={"code": "PLAN_NOT_FOUND", "message": "الخطة غير موجودة."})
@@ -1349,7 +1430,6 @@ def approve_plan_version(
     pln.approved_version = pln.version
     pln.approved_by = approverName.strip() or ctx.teacher_name or "المعلم المراجع"
     pln.approved_at = utcnow()
-    pln.context_snapshot = ctx.snapshot_dict()
     rev.overall_status = "approved"
 
     # Update the PlanVersion record for this version to reflect approval
@@ -1379,6 +1459,7 @@ def approve_plan_version(
 def copy_plan_to_another_context(
     plan_id: str,
     payload: PlanCopyCrossContextRequest,
+    x_active_context_id: Optional[str] = Header(default=None),
     db: Session = Depends(get_db),
 ):
     """
@@ -1388,6 +1469,7 @@ def copy_plan_to_another_context(
     - Unlinks the previous context's `source_id` and `lesson_ids`
     - Captures the target context's `context_snapshot` and re-runs specialized audit!
     """
+    verify_active_context_guard(payload.sourceContextId, x_active_context_id)
     orig = db.query(Plan).filter(Plan.id == plan_id, Plan.context_id == payload.sourceContextId).first()
     if not orig:
         raise HTTPException(status_code=404, detail={"code": "SOURCE_PLAN_NOT_FOUND", "message": "الخطة الأصلية غير موجودة."})
@@ -1495,6 +1577,7 @@ def get_dashboard_summary(contextId: Optional[str] = Query(None), db: Session = 
     for p in plans:
         if p.reviews:
             latest_r = sorted(p.reviews, key=lambda r: r.created_at or utcnow(), reverse=True)[0]
+            route_prefix = "/weekly-plan" if p.plan_type == "weekly" else "/five-day-plan" if p.plan_type == "five_day" else "/daily-plan"
             for f in latest_r.findings:
                 if f["category"] == "BLOCKER":
                     today_tasks.append(
@@ -1504,7 +1587,7 @@ def get_dashboard_summary(contextId: Optional[str] = Query(None), db: Session = 
                             "subtitle": f"{p.title} · حقل مطلوب قبل اكتمال المراجعة",
                             "badge": "أولوية",
                             "badgeType": "blocker",
-                            "targetRoute": f"/daily-plan?planId={p.id}",
+                            "targetRoute": f"{route_prefix}?planId={p.id}",
                         }
                     )
     if unverified_sources > 0 and len(sources) > 0:
@@ -1541,6 +1624,7 @@ def get_dashboard_summary(contextId: Optional[str] = Query(None), db: Session = 
         },
         "todayTasks": today_tasks[:5],
         "recentPlans": [serialize_plan(p) for p in plans[:6]],
+        "activityTimeline": [],
         "sources": [serialize_source(s) for s in sources],
         "recentExports": [
             {
@@ -1578,11 +1662,15 @@ def get_reports_summary(
         plans = [p for p in plans if (p.planning_date or "") <= dateTo.strip()]
 
     exports = db.query(ExportTask).filter(ExportTask.context_id == contextId).all()
+    if (isinstance(planType, str) and planType not in ("all", "")) or (isinstance(dateFrom, str) and dateFrom.strip()) or (isinstance(dateTo, str) and dateTo.strip()):
+        filtered_plan_ids = {p.id for p in plans}
+        exports = [e for e in exports if e.plan_id in filtered_plan_ids]
     sources = db.query(CurriculumSource).filter(CurriculumSource.context_id == contextId).all()
 
     total_plans = len(plans)
     reviewed_plans = sum(1 for p in plans if p.status in ("reviewed", "approved"))
     draft_plans = sum(1 for p in plans if p.status in ("draft", "needs_revision"))
+    approved_plans = sum(1 for p in plans if p.status == "approved")
 
     patterns = []
     for p_type, label in [
@@ -1616,6 +1704,7 @@ def get_reports_summary(
         "totalPlans": total_plans,
         "reviewedPlans": reviewed_plans,
         "draftPlans": draft_plans,
+        "approvedPlans": approved_plans,
         "exportsCount": len(exports),
         "patternSummary": patterns,
         "documentationGaps": doc_gaps,
@@ -1704,8 +1793,10 @@ def _build_export_bytes(
         if pver:
             plan_snap = dict(pver.plan_payload or {})
             plan_snap["version"] = pver.version_number
-            plan_snap["status"] = pln.status if pln.version == pver.version_number else pver.status_at_save
-            plan_snap["approvedBy"] = pln.approved_by or (ctx.teacher_name if ctx else "")
+            ver_status = pln.status if pln.version == pver.version_number else pver.status_at_save
+            plan_snap["status"] = ver_status
+            if ver_status == "approved":
+                plan_snap["approvedBy"] = plan_snap.get("approvedBy") or pln.approved_by or (ctx.teacher_name if ctx else "")
             if not plan_snap.get("teacherName"):
                 plan_snap["teacherName"] = pln.teacher_name or (ctx.teacher_name if ctx else "")
             if not context_snap_override:
@@ -1715,7 +1806,8 @@ def _build_export_bytes(
             plan_ver_num = pver.version_number
         else:
             plan_snap = serialize_plan(pln)
-            plan_snap["approvedBy"] = pln.approved_by or (ctx.teacher_name if ctx else "")
+            if pln.status == "approved":
+                plan_snap["approvedBy"] = pln.approved_by or (ctx.teacher_name if ctx else "")
             if not plan_snap.get("teacherName"):
                 plan_snap["teacherName"] = pln.teacher_name or (ctx.teacher_name if ctx else "")
             if not context_snap_override:
@@ -1738,6 +1830,16 @@ def _build_export_bytes(
             resolved_plan_id = first_pln.id
             plan_snap = serialize_plan(first_pln)
             plan_ver_num = first_pln.version
+            if not context_snap_override and first_pln.context_snapshot:
+                context_snap = dict(first_pln.context_snapshot)
+            rev = (
+                db.query(PlanReview)
+                .filter(PlanReview.plan_id == first_pln.id, PlanReview.plan_version == plan_ver_num)
+                .order_by(PlanReview.created_at.desc())
+                .first()
+            )
+            if rev:
+                review_snap = {"findings": rev.findings}
 
     fmt = export_format.lower().strip()
     if fmt == "docx":
@@ -1769,23 +1871,9 @@ def _build_export_bytes(
             planType=plan_type_filter,
             db=db,
         )
-        rep_plan_snap = {
-            "title": "تقرير التخطيط والاكتمال للمعلم",
-            "status": "reviewed",
-            "version": 1,
-            "planType": "daily",
-            "periodsCount": 1,
-            "periodMinutes": 45,
-            "objectives": [
-                f"إجمالي الخطط المحفوظة: {rep_summary['totalPlans']}",
-                f"الخطط مكتملة المراجعة: {rep_summary['reviewedPlans']}",
-                f"المسودات قيد الإعداد: {rep_summary['draftPlans']}",
-            ],
-            "phases": [],
-            "formativeAssessment": rep_summary["disclaimer"],
-            "provenanceLabel": "تقرير مشتق من بيانات التخطيط الفعلية",
-        }
-        file_bytes = generate_plan_docx_bytes(rep_plan_snap, context_snap, review_snap, source_status)
+        file_bytes = generate_plan_docx_bytes(
+            plan_snap, context_snap, review_snap, source_status, is_report=True, report_summary=rep_summary
+        )
         ext = "docx"
     elif fmt == "bundle_zip":
         docx_b = generate_plan_docx_bytes(plan_snap, context_snap, review_snap, source_status)
@@ -1956,7 +2044,13 @@ def post_system_restore(payload: dict):
             status_code=400,
             detail={"code": "INVALID_BACKUP_PAYLOAD", "message": "ملف النسخة الاحتياطية غير صالح."},
         )
-    return restore_database_backup_dict(payload)
+    try:
+        return restore_database_backup_dict(payload)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "INVALID_BACKUP_PAYLOAD", "message": f"بيانات النسخة الاحتياطية غير صالحة: {exc}"},
+        )
 
 
 # ==============================================================================
@@ -2009,6 +2103,7 @@ def ai_generate_slides_for_plan(
     settings["title"] = settings.get("title") or pln.title
     pln.presentation_settings = settings
     pln.version += 1
+    pln.status = "draft"
     pln.updated_at = utcnow()
     _save_plan_version_and_review(db, pln, ctx)
     db.commit()
@@ -2157,30 +2252,50 @@ def ai_extract_source_structure(
     chapters_created = 0
     lessons_created = 0
 
-    existing_ch_count = db.query(Chapter).filter(Chapter.source_id == src.id).count()
+    def _safe_int(val: Any, default: int = 1) -> int:
+        if isinstance(val, int):
+            return val
+        m = re.search(r"\d+", str(val or ""))
+        return int(m.group(0)) if m else default
+
+    existing_chapters = {c.title.strip(): c for c in db.query(Chapter).filter(Chapter.source_id == src.id).all()}
+    existing_lessons = {l.title.strip(): l for l in db.query(Lesson).filter(Lesson.source_id == src.id).all()}
+    existing_ch_count = len(existing_chapters)
     for idx, ch_item in enumerate(res.get("chapters") or [], start=1):
-        ch = Chapter(
-            context_id=payload.contextId,
-            source_id=src.id,
-            title=str(ch_item.get("title") or f"فصل {existing_ch_count + idx}").strip(),
-            order_index=existing_ch_count + idx,
-            pdf_start_page=int(ch_item.get("pdfStartPage") or 1),
-            printed_start_page=str(ch_item.get("printedStartPage") or "1"),
-            is_documented=is_doc,
-            provenance_label=prov,
-        )
-        db.add(ch)
-        db.flush()
-        chapters_created += 1
+        if not isinstance(ch_item, dict):
+            continue
+        ch_title = str(ch_item.get("title") or f"فصل {existing_ch_count + idx}").strip()
+        if ch_title in existing_chapters:
+            ch = existing_chapters[ch_title]
+        else:
+            ch = Chapter(
+                context_id=payload.contextId,
+                source_id=src.id,
+                title=ch_title,
+                order_index=existing_ch_count + idx,
+                pdf_start_page=_safe_int(ch_item.get("pdfStartPage"), 1),
+                printed_start_page=str(ch_item.get("printedStartPage") or "1"),
+                is_documented=is_doc,
+                provenance_label=prov,
+            )
+            db.add(ch)
+            db.flush()
+            existing_chapters[ch_title] = ch
+            chapters_created += 1
 
         for l_idx, les_item in enumerate(ch_item.get("lessons") or [], start=1):
+            if not isinstance(les_item, dict):
+                continue
+            les_title = str(les_item.get("title") or f"درس {l_idx}").strip()
+            if les_title in existing_lessons:
+                continue
             les = Lesson(
                 context_id=payload.contextId,
                 source_id=src.id,
                 chapter_id=ch.id,
-                title=str(les_item.get("title") or f"درس {l_idx}").strip(),
+                title=les_title,
                 code_or_order=str(l_idx),
-                pdf_page_number=int(les_item.get("pdfPageNumber") or ch.pdf_start_page or 1),
+                pdf_page_number=_safe_int(les_item.get("pdfPageNumber"), ch.pdf_start_page or 1),
                 printed_page_number=str(les_item.get("printedPageNumber") or ch.printed_start_page or "1"),
                 content_origin=origin,
                 provenance_label=prov,
@@ -2190,6 +2305,7 @@ def ai_extract_source_structure(
                 review_status="draft",
             )
             db.add(les)
+            existing_lessons[les_title] = les
             lessons_created += 1
 
     db.commit()

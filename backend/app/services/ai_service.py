@@ -56,7 +56,7 @@ def get_ai_status() -> Dict[str, Any]:
 def _extract_json_from_text(raw_text: str) -> Optional[Dict[str, Any]]:
     if not raw_text:
         return None
-    cleaned = raw_text.strip()
+    cleaned = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
     fence_match = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", cleaned, re.DOTALL)
     if fence_match:
         cleaned = fence_match.group(1).strip()
@@ -70,15 +70,18 @@ def _extract_json_from_text(raw_text: str) -> Optional[Dict[str, Any]]:
     except Exception:
         pass
 
-    start_obj = cleaned.find("{")
-    end_obj = cleaned.rfind("}")
-    if start_obj != -1 and end_obj > start_obj:
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(cleaned):
+        if ch not in ("{", "["):
+            continue
         try:
-            parsed = json.loads(cleaned[start_obj : end_obj + 1])
-            if isinstance(parsed, dict):
-                return parsed
+            obj, _ = decoder.raw_decode(cleaned, idx)
+            if isinstance(obj, dict):
+                return obj
+            if isinstance(obj, list):
+                return {"items": obj}
         except Exception:
-            pass
+            continue
     return None
 
 
@@ -283,28 +286,70 @@ def _build_deterministic_slides(
     return [{"order": i + 1, "title": item["title"], "content": item["content"]} for i, item in enumerate(base[:slides_count])]
 
 
-def _normalize_phases_minutes(phases: List[Dict[str, Any]], total_minutes: int) -> List[Dict[str, Any]]:
-    if not phases:
-        return []
-    in_class = [p for p in phases if not p.get("isHomeEnrichment")]
-    if not in_class:
-        return phases
-    current_sum = sum(max(0, int(p.get("minutes") or 0)) for p in in_class)
-    if current_sum != total_minutes:
-        diff = total_minutes - current_sum
-        last_p = in_class[-1]
-        new_min = max(1, int(last_p.get("minutes") or 0) + diff)
-        last_p["minutes"] = new_min
-        new_sum = sum(max(0, int(p.get("minutes") or 0)) for p in in_class)
-        if new_sum != total_minutes and len(in_class) >= 2:
-            # Exact rebalance proportional or on largest phase
-            largest = max(in_class[:-1], key=lambda x: int(x.get("minutes") or 0))
-            largest["minutes"] = max(1, int(largest.get("minutes") or 0) + (total_minutes - new_sum))
-    for i, p in enumerate(phases, start=1):
-        p["order"] = i
+def _sanitize_slides(raw_slides: Any, fallback_slides: List[Dict[str, Any]], max_count: int = 12) -> List[Dict[str, Any]]:
+    clean: List[Dict[str, Any]] = []
+    if isinstance(raw_slides, list):
+        for idx, item in enumerate(raw_slides[:max_count], start=1):
+            if isinstance(item, dict):
+                s_title = str(item.get("title") or f"شريحة {idx}").strip()
+                s_content = str(item.get("content") or "").strip() or s_title
+                clean.append({"order": idx, "title": s_title, "content": s_content})
+            elif isinstance(item, str) and item.strip():
+                clean.append({"order": idx, "title": f"شريحة {idx}", "content": item.strip()})
+    return clean if clean else fallback_slides
+
+
+def _normalize_phases_minutes(phases: List[Any], total_minutes: int) -> List[Dict[str, Any]]:
+    clean_phases: List[Dict[str, Any]] = []
+    for item in phases or []:
+        if not isinstance(item, dict):
+            continue
+        p = dict(item)
+        try:
+            mins = max(1, int(float(p.get("minutes") or 5)))
+        except Exception:
+            mins = 5
+        p["minutes"] = mins
         p.setdefault("periodNumber", 1)
-        p.setdefault("isHomeEnrichment", False)
-    return phases
+        p["isHomeEnrichment"] = bool(p.get("isHomeEnrichment", False))
+        clean_phases.append(p)
+
+    if not clean_phases:
+        return []
+
+    in_class = [p for p in clean_phases if not p["isHomeEnrichment"]]
+    if in_class and total_minutes > 0:
+        cur_sum = sum(p["minutes"] for p in in_class)
+        if cur_sum != total_minutes:
+            # Proportionally scale to fit total_minutes while keeping >=1 min per phase (if possible)
+            min_per_phase = 1 if total_minutes >= len(in_class) else 0
+            for p in in_class:
+                scaled = round((p["minutes"] / max(1, cur_sum)) * total_minutes)
+                p["minutes"] = max(min_per_phase, scaled)
+            delta = total_minutes - sum(p["minutes"] for p in in_class)
+            # Distribute any remaining +/- delta across phases safely
+            ordered = sorted(in_class, key=lambda x: x["minutes"], reverse=(delta < 0))
+            guard = 0
+            while delta != 0 and guard < 200:
+                changed = False
+                for p in ordered:
+                    if delta == 0:
+                        break
+                    if delta > 0:
+                        p["minutes"] += 1
+                        delta -= 1
+                        changed = True
+                    elif p["minutes"] > min_per_phase:
+                        p["minutes"] -= 1
+                        delta += 1
+                        changed = True
+                if not changed:
+                    break
+                guard += 1
+
+    for i, p in enumerate(clean_phases, start=1):
+        p["order"] = i
+    return clean_phases
 
 
 def generate_daily_plan_with_ai(
@@ -374,22 +419,26 @@ def generate_daily_plan_with_ai(
         if not objectives:
             objectives = [f"أن يوضح الطالب المفاهيم الرئيسة لدرس {effective_title}."]
         phases = _normalize_phases_minutes(parsed["phases"], total_allocated)
-        slides = parsed.get("slides") if isinstance(parsed.get("slides"), list) and parsed.get("slides") else _build_deterministic_slides(
-            effective_title, subject, grade, country, objectives, phases, str(parsed.get("formativeAssessment") or ""), source_excerpt, 5
-        )
-        return {
-            "title": effective_title,
-            "objectives": objectives,
-            "priorKnowledge": str(parsed.get("priorKnowledge") or f"استرجاع المفاهيم التمهيدية لدرس {effective_title}.").strip(),
-            "teacherRole": str(parsed.get("teacherRole") or "التوجيه والنمذجة وإدارة الحوار الصفي والتقويم التكويني.").strip(),
-            "studentRole": str(parsed.get("studentRole") or "الاستكشاف والممارسة الموجهة والمستقلة وتعليل الحلول.").strip(),
-            "phases": phases,
-            "formativeAssessment": str(parsed.get("formativeAssessment") or "بطاقة خروج وملاحظة أداء المتعلم وفق محك واضح.").strip(),
-            "differentiation": str(parsed.get("differentiation") or "دعم إضافي للمتعثرين وتحدٍ إثرائي للمتمكنين.").strip(),
-            "homework": str(parsed.get("homework") or "تطبيق منزلي مرتبط بأهداف الدرس.").strip(),
-            "slides": slides,
-            "modelUsed": model_used,
-        }
+        if not phases:
+            phases = _normalize_phases_minutes([], total_allocated)
+        else:
+            fallback_slides = _build_deterministic_slides(
+                effective_title, subject, grade, country, objectives, phases, str(parsed.get("formativeAssessment") or ""), source_excerpt, 5
+            )
+            slides = _sanitize_slides(parsed.get("slides"), fallback_slides, max_count=8)
+            return {
+                "title": effective_title,
+                "objectives": objectives,
+                "priorKnowledge": str(parsed.get("priorKnowledge") or f"استرجاع المفاهيم التمهيدية لدرس {effective_title}.").strip(),
+                "teacherRole": str(parsed.get("teacherRole") or "التوجيه والنمذجة وإدارة الحوار الصفي والتقويم التكويني.").strip(),
+                "studentRole": str(parsed.get("studentRole") or "الاستكشاف والممارسة الموجهة والمستقلة وتعليل الحلول.").strip(),
+                "phases": phases,
+                "formativeAssessment": str(parsed.get("formativeAssessment") or "بطاقة خروج وملاحظة أداء المتعلم وفق محك واضح.").strip(),
+                "differentiation": str(parsed.get("differentiation") or "دعم إضافي للمتعثرين وتحدٍ إثرائي للمتمكنين.").strip(),
+                "homework": str(parsed.get("homework") or "تطبيق منزلي مرتبط بأهداف الدرس.").strip(),
+                "slides": slides,
+                "modelUsed": model_used,
+            }
 
     # Deterministic fallback when offline
     scale = periods_count

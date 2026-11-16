@@ -1,17 +1,26 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
-import { useTeacherApp } from "../../components/AppShell";
+import { useTeacherApp, WorkflowStepper } from "../../components/AppShell";
 
 export default function SourcesImportPage() {
   const { activeContext, activeContextId, apiFetch } = useTeacherApp();
   const [sources, setSources] = useState<any[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(true);
   const [uploading, setUploading] = useState<boolean>(false);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [savingMeta, setSavingMeta] = useState<boolean>(false);
+  const [savingPage, setSavingPage] = useState<boolean>(false);
   const [aiProcessing, setAiProcessing] = useState<string>("");
   const [feedback, setFeedback] = useState<string>("");
   const [errorMsg, setErrorMsg] = useState<string>("");
+  const [extractedSummary, setExtractedSummary] = useState<{
+    chaptersCreated: number;
+    lessonsCreated: number;
+    modelUsed: string;
+  } | null>(null);
 
   // Metadata Form State matching `استيراد كتاب المنهج.png`
   const [title, setTitle] = useState<string>("كتاب المنهج");
@@ -23,58 +32,115 @@ export default function SourcesImportPage() {
   const [selectedPageIdx, setSelectedPageIdx] = useState<number>(0);
   const [correctedPageText, setCorrectedPageText] = useState<string>("");
   const [printedPageNumber, setPrintedPageNumber] = useState<string>("1");
+  const [pageDirty, setPageDirty] = useState<boolean>(false);
+  const [pendingPageSwitchIdx, setPendingPageSwitchIdx] = useState<number | null>(null);
 
-  const loadSources = async (keepId?: string, keepPageIdx?: number) => {
-    try {
-      const res = await apiFetch(`/api/sources?contextId=${encodeURIComponent(activeContextId)}`);
-      const list = res.items || [];
-      setSources(list);
-      const targetId = keepId || selectedSourceId || (list[0] && list[0].id) || "";
-      const found = list.find((s: any) => s.id === targetId) || (list.length > 0 ? list[0] : null);
-      if (found) {
-        bindSource(found, keepPageIdx);
-      } else {
+  const bindSource = useCallback(
+    (src: any | null, keepPageIdx?: number) => {
+      if (!src) {
         setSelectedSourceId("");
         setTitle(activeContext?.curriculumName || "كتاب المنهج");
+        setBookYear("");
+        setEdition("");
+        setSourceUrl("");
+        setReviewerName("");
+        setReviewNotes("");
+        setSelectedPageIdx(0);
+        setCorrectedPageText("");
+        setPrintedPageNumber("1");
+        setPageDirty(false);
+        setPendingPageSwitchIdx(null);
+        return;
       }
-    } catch (e) {
-      console.error(e);
-    }
-  };
+      setSelectedSourceId(src.id);
+      setTitle(src.title || "سجل منهج");
+      setBookYear(src.bookYear || "");
+      setEdition(src.edition || "");
+      setSourceUrl(src.sourceUrl || "");
+      setReviewerName(src.reviewerName || "");
+      setReviewNotes(src.reviewNotes || "");
+      const pageIdx =
+        typeof keepPageIdx === "number" && src.pages && keepPageIdx >= 0 && keepPageIdx < src.pages.length
+          ? keepPageIdx
+          : 0;
+      setSelectedPageIdx(pageIdx);
+      setPageDirty(false);
+      setPendingPageSwitchIdx(null);
+      if (src.pages && src.pages.length > 0) {
+        const pg = src.pages[pageIdx];
+        setCorrectedPageText(pg.correctedText || pg.extractedText || "");
+        setPrintedPageNumber(pg.printedPageNumber || String(pg.pdfPageNumber || 1));
+      } else {
+        setCorrectedPageText("");
+        setPrintedPageNumber("1");
+      }
+    },
+    [activeContext?.curriculumName]
+  );
 
-  const bindSource = (src: any, keepPageIdx?: number) => {
-    setSelectedSourceId(src.id);
-    setTitle(src.title || "سجل منهج");
-    setBookYear(src.bookYear || "");
-    setEdition(src.edition || "");
-    setSourceUrl(src.sourceUrl || "");
-    setReviewerName(src.reviewerName || "");
-    setReviewNotes(src.reviewNotes || "");
-    const pageIdx =
-      typeof keepPageIdx === "number" && src.pages && keepPageIdx >= 0 && keepPageIdx < src.pages.length
-        ? keepPageIdx
-        : 0;
-    setSelectedPageIdx(pageIdx);
-    if (src.pages && src.pages.length > 0) {
-      const pg = src.pages[pageIdx];
-      setCorrectedPageText(pg.correctedText || pg.extractedText || "");
-      setPrintedPageNumber(pg.printedPageNumber || String(pg.pdfPageNumber || 1));
-    }
-  };
+  const loadSources = useCallback(
+    async (keepId?: string, keepPageIdx?: number, isCancelled?: () => boolean) => {
+      if (!activeContextId) {
+        setSources([]);
+        bindSource(null);
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setErrorMsg("");
+      try {
+        const res = await apiFetch(`/api/sources?contextId=${encodeURIComponent(activeContextId)}`);
+        if (isCancelled && isCancelled()) return;
+        const list = res.items || [];
+        setSources(list);
+        setSelectedSourceId((prev) => {
+          const targetId =
+            (keepId && list.some((s: any) => s.id === keepId) && keepId) ||
+            (prev && list.some((s: any) => s.id === prev) && prev) ||
+            (list[0] && list[0].id) ||
+            "";
+          const found = list.find((s: any) => s.id === targetId) || null;
+          bindSource(found, keepPageIdx);
+          return found ? found.id : "";
+        });
+      } catch (e: any) {
+        if (!isCancelled || !isCancelled()) {
+          setErrorMsg(e?.message || "تعذر تحميل سجلات المصادر.");
+        }
+      } finally {
+        if (!isCancelled || !isCancelled()) {
+          setLoading(false);
+        }
+      }
+    },
+    [activeContextId, apiFetch, bindSource]
+  );
 
   useEffect(() => {
-    if (activeContextId) loadSources();
-  }, [activeContextId]);
+    let cancelled = false;
+    setFeedback("");
+    setErrorMsg("");
+    setExtractedSummary(null);
+    setSelectedSourceId("");
+    bindSource(null);
+    loadSources(undefined, undefined, () => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeContextId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const currentSource = sources.find((s) => s.id === selectedSourceId) || null;
   const currentPage = currentSource?.pages?.[selectedPageIdx] || null;
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const uploadPdfFile = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
+      setErrorMsg("يرجى اختيار ملف بصيغة PDF صالحة فقط.");
+      return;
+    }
     setUploading(true);
     setErrorMsg("");
     setFeedback("");
+    setExtractedSummary(null);
     try {
       const fd = new FormData();
       fd.append("contextId", activeContextId);
@@ -96,16 +162,34 @@ export default function SourcesImportPage() {
           created.extractionStatus === "extracted_text" ? "تم استخراج النص" : "يتطلب مراجعة OCR / تفريغًا يدويًا"
         }).`
       );
-      await loadSources(created.id);
+      await loadSources(created.id, 0);
     } catch (err: any) {
-      setErrorMsg(err.message);
+      setErrorMsg(err?.message || "تعذر رفع ملف PDF.");
     } finally {
       setUploading(false);
     }
   };
 
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    await uploadPdfFile(file);
+  };
+
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const file = e.dataTransfer?.files?.[0];
+    if (file) {
+      await uploadPdfFile(file);
+    }
+  };
+
   const handleSaveMetadata = async (requestVerification: boolean) => {
     if (!currentSource) return;
+    setSavingMeta(true);
     setErrorMsg("");
     setFeedback("");
     try {
@@ -118,7 +202,9 @@ export default function SourcesImportPage() {
           edition,
           sourceUrl,
           isOfficialClaimed: requestVerification,
-          officialEvidence: requestVerification ? `البلد: ${activeContext?.country} | الطبعة: ${edition} | الرابط: ${sourceUrl}` : "",
+          officialEvidence: requestVerification
+            ? `البلد: ${activeContext?.country} | الطبعة: ${edition} | الرابط: ${sourceUrl}`
+            : "",
           reviewerName,
           reviewNotes,
           verificationStatus: requestVerification ? "human_verified" : "pending_review",
@@ -131,14 +217,18 @@ export default function SourcesImportPage() {
           ? `تم اعتماد توثيق المصدر ومراجعته البشرية بواسطة «${updated.reviewerName}»!`
           : "تم حفظ بيانات المصدر في قاعدة البيانات."
       );
-      await loadSources(updated.id);
+      await loadSources(updated.id, selectedPageIdx);
     } catch (err: any) {
-      setErrorMsg(err.message);
+      setErrorMsg(err?.message || "تعذر حفظ بيانات المصدر.");
+    } finally {
+      setSavingMeta(false);
     }
   };
 
-  const handleSavePageCorrection = async () => {
-    if (!currentSource || !currentPage) return;
+  const handleSavePageCorrection = async (): Promise<boolean> => {
+    if (!currentSource || !currentPage) return false;
+    setSavingPage(true);
+    setErrorMsg("");
     try {
       await apiFetch(`/api/sources/${currentSource.id}/pages/${currentPage.id}`, {
         method: "PUT",
@@ -149,11 +239,35 @@ export default function SourcesImportPage() {
           humanReviewed: true,
         }),
       });
+      setPageDirty(false);
       setFeedback(`تم حفظ تصحيح النص ورقم الصفحة المطبوعة (${printedPageNumber}) لصفحة PDF رقم ${currentPage.pdfPageNumber}.`);
       await loadSources(currentSource.id, selectedPageIdx);
+      return true;
     } catch (err: any) {
-      setErrorMsg(err.message);
+      setErrorMsg(err?.message || "تعذر حفظ تصحيح الصفحة.");
+      return false;
+    } finally {
+      setSavingPage(false);
     }
+  };
+
+  const applyPageSelection = (idx: number) => {
+    setSelectedPageIdx(idx);
+    setPageDirty(false);
+    setPendingPageSwitchIdx(null);
+    const pg = currentSource?.pages?.[idx];
+    if (pg) {
+      setCorrectedPageText(pg.correctedText || pg.extractedText || "");
+      setPrintedPageNumber(pg.printedPageNumber || String(pg.pdfPageNumber));
+    }
+  };
+
+  const handlePageSelectChange = (idx: number) => {
+    if (pageDirty) {
+      setPendingPageSwitchIdx(idx);
+      return;
+    }
+    applyPageSelection(idx);
   };
 
   const handleAiPageOcr = async () => {
@@ -168,14 +282,15 @@ export default function SourcesImportPage() {
       });
       if (res?.page) {
         setCorrectedPageText(res.page.correctedText || res.page.extractedText || "");
-        setPrintedPageNumber(res.page.printedPageNumber ?? "");
+        setPrintedPageNumber(res.page.printedPageNumber || String(currentPage.pdfPageNumber));
+        setPageDirty(false);
       }
       await loadSources(currentSource.id, selectedPageIdx);
       setFeedback(
         `تم استخراج النص بالرؤية الذكية لصفحة PDF رقم ${currentPage.pdfPageNumber} عبر (${res?.modelUsed || "NVIDIA NIM Vision"}). راجع النص قبل الاعتماد.`
       );
     } catch (err: any) {
-      setErrorMsg(err.message);
+      setErrorMsg(err?.message || "تعذر تنفيذ استخراج النص بالرؤية الذكية.");
     } finally {
       setAiProcessing("");
     }
@@ -192,11 +307,17 @@ export default function SourcesImportPage() {
         body: JSON.stringify({ contextId: activeContextId }),
       });
       await loadSources(currentSource.id, selectedPageIdx);
+      const summaryObj = {
+        chaptersCreated: res?.chaptersCreated ?? 0,
+        lessonsCreated: res?.lessonsCreated ?? 0,
+        modelUsed: res?.modelUsed || "NVIDIA NIM",
+      };
+      setExtractedSummary(summaryObj);
       setFeedback(
-        `تم استخراج الفصول والدروس تلقائيًا عبر (${res?.modelUsed || "NVIDIA NIM"}): أُنشئ ${res?.chaptersCreated ?? 0} فصلًا و${res?.lessonsCreated ?? 0} درسًا.`
+        `تم استخراج الفصول والدروس تلقائيًا عبر (${summaryObj.modelUsed}): أُنشئ ${summaryObj.chaptersCreated} فصلًا و${summaryObj.lessonsCreated} درسًا.`
       );
     } catch (err: any) {
-      setErrorMsg(err.message);
+      setErrorMsg(err?.message || "تعذر استخراج الفصول والدروس تلقائيًا.");
     } finally {
       setAiProcessing("");
     }
@@ -219,6 +340,8 @@ export default function SourcesImportPage() {
           ⓘ يفحص الخادم توقيع الملف الفعلي (`%PDF-`) والحجم وعدد الصفحات ويحسب بصمة SHA-256، ويفصل بين رقم صفحة PDF ورقم الصفحة المطبوعة.
         </span>
       </div>
+
+      <WorkflowStepper activeStep={1} />
 
       <div style={{ display: "flex", gap: "8px", marginBottom: "14px", flexWrap: "wrap" }}>
         <span
@@ -243,6 +366,25 @@ export default function SourcesImportPage() {
         </div>
       )}
 
+      {extractedSummary && (
+        <div className="card" style={{ borderColor: "var(--primary-green)", backgroundColor: "var(--primary-tint-bg)" }}>
+          <div style={{ fontWeight: 800, marginBottom: "6px", color: "var(--primary-green)" }}>
+            📚 اكتمل استخراج بنية الكتاب ({extractedSummary.chaptersCreated} فصول · {extractedSummary.lessonsCreated} دروس)
+          </div>
+          <p style={{ fontSize: "0.84rem", color: "var(--text-main)", marginBottom: "10px" }}>
+            الفصول والدروس المستخرجة أصبحت متاحة الآن في صفحات المنهج واختيار الدرس للربط المباشر بالخطط اليومية.
+          </p>
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+            <Link href="/curriculum" className="btn btn-primary">
+              عرض الفصول في المنهج ←
+            </Link>
+            <Link href="/lessons" className="btn btn-secondary">
+              مراجعة وتحرير الدروس المستخرجة ←
+            </Link>
+          </div>
+        </div>
+      )}
+
       {errorMsg && (
         <div className="blocker-banner">
           <span>⛔ {errorMsg}</span>
@@ -260,26 +402,39 @@ export default function SourcesImportPage() {
           </p>
 
           <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDragging(true);
+            }}
+            onDragLeave={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setIsDragging(false);
+            }}
+            onDrop={handleDrop}
             style={{
-              border: "2px dashed var(--border-color)",
+              border: `2px dashed ${isDragging ? "var(--primary-green)" : "var(--border-color)"}`,
               borderRadius: "12px",
               padding: "28px 18px",
               textAlign: "center",
-              backgroundColor: "#fbfcfb",
+              backgroundColor: isDragging ? "var(--primary-tint-bg)" : "#fbfcfb",
+              transition: "all 0.15s ease",
             }}
           >
             <div style={{ fontSize: "1.8rem", marginBottom: "8px", color: "var(--primary-green)" }}>☁↑</div>
             <div style={{ fontWeight: 800, fontSize: "0.98rem", marginBottom: "4px" }}>
-              اسحب ملف الكتاب هنا أو اختر ملفًا
+              اسحب ملف الكتاب وأفلته هنا أو اختر ملفًا
             </div>
             <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginBottom: "14px" }}>
               PDF فقط · يُفحص التوقيع الفعلي (`%PDF-`) ولا تُضاف حالة توثيق تلقائيًا
             </div>
-            <label className="btn btn-secondary" style={{ cursor: "pointer" }}>
+            <label className="btn btn-secondary" style={{ cursor: uploading ? "not-allowed" : "pointer" }}>
               {uploading ? "جارٍ رفع وفحص الملف..." : "اختيار ملف PDF حقيقي"}
               <input
                 type="file"
                 accept=".pdf,application/pdf"
+                disabled={uploading || !activeContextId}
                 onChange={handleFileUpload}
                 style={{ display: "none" }}
               />
@@ -292,7 +447,7 @@ export default function SourcesImportPage() {
           <p style={{ fontSize: "0.78rem", color: "var(--text-secondary)", marginBottom: "12px" }}>
             {currentSource?.sha256Fingerprint
               ? `بصمة SHA-256: ${currentSource.sha256Fingerprint.slice(0, 24)}...`
-              : "ملف توضيحي، لم يُرفع ملف PDF فعلي بعد"}
+              : "لم يُرفع ملف PDF فعلي بعد"}
           </p>
 
           <div
@@ -303,12 +458,12 @@ export default function SourcesImportPage() {
               border: "1px solid rgba(23, 107, 82, 0.25)",
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-              <div style={{ fontWeight: 800, fontSize: "0.95rem" }}>
-                📄 {currentSource?.fileName || "كتاب-تجريبي.pdf"}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "8px" }}>
+              <div style={{ fontWeight: 800, fontSize: "0.95rem", overflowWrap: "anywhere" }}>
+                📄 {currentSource?.fileName || "لم يُرفع ملف PDF بعد"}
               </div>
               <span className="badge badge-neutral">
-                {currentSource?.pageCount ? `${currentSource.pageCount} صفحات` : "تجريبي"}
+                {currentSource?.pageCount ? `${currentSource.pageCount} صفحات` : "بانتظار الرفع"}
               </span>
             </div>
             <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "10px" }}>
@@ -342,11 +497,7 @@ export default function SourcesImportPage() {
 
           <div className="form-group">
             <label className="form-label">عنوان السجل</label>
-            <input
-              className="form-input"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-            />
+            <input className="form-input" value={title} onChange={(e) => setTitle(e.target.value)} />
           </div>
 
           <div className="equal-split-grid">
@@ -420,13 +571,18 @@ export default function SourcesImportPage() {
           </div>
 
           <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-            <button type="button" className="btn btn-secondary" onClick={() => handleSaveMetadata(false)}>
-              حفظ بيانات ناقصة (مسودة مصدر)
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={savingMeta || !currentSource}
+              onClick={() => handleSaveMetadata(false)}
+            >
+              {savingMeta ? "جارٍ الحفظ..." : "حفظ بيانات ناقصة (مسودة مصدر)"}
             </button>
             <button
               type="button"
               className="btn btn-primary"
-              disabled={!canRequestVerification}
+              disabled={savingMeta || !currentSource || !canRequestVerification}
               title={
                 !canRequestVerification
                   ? "أدخل السنة والطبعة ورابط المصدر واسم المراجع لتفعيل الاعتماد"
@@ -434,7 +590,7 @@ export default function SourcesImportPage() {
               }
               onClick={() => handleSaveMetadata(true)}
             >
-              اعتماد مراجعة المصدر وتوثيق الفهرس
+              {savingMeta ? "جارٍ الاعتماد..." : "اعتماد مراجعة المصدر وتوثيق الفهرس"}
             </button>
           </div>
         </div>
@@ -462,25 +618,25 @@ export default function SourcesImportPage() {
           <div className="card">
             <h3 style={{ fontSize: "1.05rem", fontWeight: 800, marginBottom: "10px" }}>مسار مراجعة المصدر</h3>
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: "0.86rem" }}>1. إدخال بيانات المصدر</div>
                   <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>السنة والطبعة والرابط مطلوبة</div>
                 </div>
-                <span className={`badge ${bookYear && edition && sourceUrl ? "badge-success" : "badge-blocker"}`}>
-                  {bookYear && edition && sourceUrl ? "مكتمل" : "ناقص"}
+                <span className={`badge ${bookYear.trim() && edition.trim() && sourceUrl.trim() ? "badge-success" : "badge-blocker"}`}>
+                  {bookYear.trim() && edition.trim() && sourceUrl.trim() ? "مكتمل" : "ناقص"}
                 </span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: "0.86rem" }}>2. مراجعة مستقلة</div>
                   <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>يفحص المراجع المصدر ويكتب ملاحظاته</div>
                 </div>
-                <span className={`badge ${reviewerName ? "badge-success" : "badge-warning"}`}>
-                  {reviewerName ? "مدخل" : "بانتظار"}
+                <span className={`badge ${reviewerName.trim() ? "badge-success" : "badge-warning"}`}>
+                  {reviewerName.trim() ? "مدخل" : "بانتظار"}
                 </span>
               </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: "0.86rem" }}>3. تسجيل نتيجة المراجعة</div>
                   <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>لا توثيق تلقائيًا بمجرد رفع الملف</div>
@@ -498,7 +654,7 @@ export default function SourcesImportPage() {
         </div>
       </div>
 
-      {/* Page Text & OCR Ambiguity Review Section (Req #4.12 & #7) */}
+      {/* Page Text & OCR Ambiguity Review Section */}
       {currentSource?.pages && currentSource.pages.length > 0 && (
         <div className="card">
           <h3 style={{ fontSize: "1.15rem", fontWeight: 800, marginBottom: "4px" }}>
@@ -508,21 +664,49 @@ export default function SourcesImportPage() {
             يُحفظ رقم صفحة PDF ورقم الصفحة المطبوعة كلٌّ على حدة، مع تنبيه لمواضع الأعلام والتواريخ والاقتباسات والرموز والكسور.
           </p>
 
+          {pendingPageSwitchIdx !== null && (
+            <div className="warning-banner" style={{ marginBottom: "12px" }}>
+              <span>⚠ لديك تعديلات غير محفوظة على الصفحة الحالية (#{currentPage?.pdfPageNumber}).</span>
+              <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  style={{ padding: "5px 12px", fontSize: "0.8rem" }}
+                  onClick={async () => {
+                    const nextIdx = pendingPageSwitchIdx;
+                    const ok = await handleSavePageCorrection();
+                    if (ok && nextIdx !== null) applyPageSelection(nextIdx);
+                  }}
+                >
+                  حفظ ثم الانتقال
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ padding: "5px 12px", fontSize: "0.8rem" }}
+                  onClick={() => applyPageSelection(pendingPageSwitchIdx)}
+                >
+                  تجاهل التعديلات والانتقال
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  style={{ padding: "5px 12px", fontSize: "0.8rem" }}
+                  onClick={() => setPendingPageSwitchIdx(null)}
+                >
+                  إلغاء
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="equal-split-grid">
             <div className="form-group">
               <label className="form-label">اختر صفحة PDF للمعاينة والتصحيح</label>
               <select
                 className="form-select"
                 value={selectedPageIdx}
-                onChange={(e) => {
-                  const idx = Number(e.target.value);
-                  setSelectedPageIdx(idx);
-                  const pg = currentSource.pages[idx];
-                  if (pg) {
-                    setCorrectedPageText(pg.correctedText || pg.extractedText || "");
-                    setPrintedPageNumber(pg.printedPageNumber || String(pg.pdfPageNumber));
-                  }
-                }}
+                onChange={(e) => handlePageSelectChange(Number(e.target.value))}
               >
                 {currentSource.pages.map((pg: any, idx: number) => (
                   <option key={pg.id} value={idx}>
@@ -537,7 +721,10 @@ export default function SourcesImportPage() {
               <input
                 className="form-input"
                 value={printedPageNumber}
-                onChange={(e) => setPrintedPageNumber(e.target.value)}
+                onChange={(e) => {
+                  setPrintedPageNumber(e.target.value);
+                  setPageDirty(true);
+                }}
               />
             </div>
           </div>
@@ -552,11 +739,17 @@ export default function SourcesImportPage() {
           )}
 
           <div className="form-group">
-            <label className="form-label">النص المستخرج القابل للتصحيح البشري قبل اعتماد الفهرس:</label>
+            <label className="form-label">
+              النص المستخرج القابل للتصحيح البشري قبل اعتماد الفهرس:
+              {pageDirty && <span className="badge badge-warning" style={{ marginInlineStart: "8px" }}>تعديل غير محفوظ</span>}
+            </label>
             <textarea
               className="form-textarea"
               value={correctedPageText}
-              onChange={(e) => setCorrectedPageText(e.target.value)}
+              onChange={(e) => {
+                setCorrectedPageText(e.target.value);
+                setPageDirty(true);
+              }}
               placeholder="النص المستخرج من الصفحة أو التفريغ اليدوي للصفحة الممسوحة..."
             />
           </div>
@@ -565,15 +758,15 @@ export default function SourcesImportPage() {
             <button
               type="button"
               className="btn btn-primary"
-              disabled={Boolean(aiProcessing)}
+              disabled={Boolean(aiProcessing) || savingPage}
               onClick={handleSavePageCorrection}
             >
-              حفظ النص المصحح ورقم الصفحة المطبوعة
+              {savingPage ? "جارٍ الحفظ..." : "حفظ النص المصحح ورقم الصفحة المطبوعة"}
             </button>
             <button
               type="button"
               className="btn btn-secondary"
-              disabled={Boolean(aiProcessing) || !currentSource || !currentPage}
+              disabled={Boolean(aiProcessing) || savingPage || !currentSource || !currentPage}
               onClick={handleAiPageOcr}
             >
               {aiProcessing === "ocr"
@@ -583,11 +776,13 @@ export default function SourcesImportPage() {
             <button
               type="button"
               className="btn btn-secondary"
-              disabled={Boolean(aiProcessing) || !currentSource}
+              disabled={Boolean(aiProcessing) || savingPage || !currentSource}
               onClick={handleAiExtractStructure}
             >
               {aiProcessing === "extract"
                 ? "جارٍ استخراج الفصول والدروس..."
+                : currentSource.chapters?.length
+                ? "📚 إعادة استخراج وإضافة فصول ودروس بالذكاء الاصطناعي"
                 : "📚 استخراج الفصول والدروس تلقائيًا بالذكاء الاصطناعي"}
             </button>
           </div>
@@ -609,53 +804,93 @@ export default function SourcesImportPage() {
           سجل تدقيق مصادر السياق النشط ({activeContext?.subject})
         </p>
 
-        <div className="table-scroll-wrapper">
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>السجل</th>
-                <th>الملف وبصمته</th>
-                <th>بيانات المصدر (سنة / طبعة / رابط)</th>
-                <th>حالة التحقق</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sources.map((s) => (
-                <tr key={s.id} onClick={() => bindSource(s)} style={{ cursor: "pointer" }}>
-                  <td style={{ fontWeight: 700 }}>{s.title}</td>
-                  <td>
-                    {s.fileName || "لم يُختر ملف"}{" "}
-                    {s.sha256Fingerprint ? `(${s.sha256Fingerprint.slice(0, 10)}...)` : ""}
-                  </td>
-                  <td>
-                    {s.bookYear || s.edition
-                      ? `السنة: ${s.bookYear || "—"} | الطبعة: ${s.edition || "—"}`
-                      : "سنة / طبعة / رابط: غير مدخلة"}
-                  </td>
-                  <td>
-                    <span
-                      className={`badge ${
-                        s.verificationStatus === "human_verified" ? "badge-success" : "badge-warning"
-                      }`}
-                    >
-                      {s.verificationStatus === "human_verified"
-                        ? `موثّق (${s.reviewerName})`
-                        : "معلّق · غير موثّق"}
-                    </span>
-                  </td>
+        {loading ? (
+          <div style={{ textAlign: "center", padding: "24px 12px", color: "var(--text-secondary)" }}>
+            جارٍ تحميل المصادر...
+          </div>
+        ) : (
+          <div className="table-scroll-wrapper">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>السجل</th>
+                  <th>الملف وبصمته</th>
+                  <th>بيانات المصدر (سنة / طبعة / رابط)</th>
+                  <th>حالة التحقق</th>
+                  <th>تحديد</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {sources.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} style={{ textAlign: "center", color: "var(--text-muted)" }}>
+                      لا توجد مصادر مرفوعة بعد في هذا السياق.
+                    </td>
+                  </tr>
+                ) : (
+                  sources.map((s) => {
+                    const isSelected = s.id === selectedSourceId;
+                    return (
+                      <tr
+                        key={s.id}
+                        onClick={() => bindSource(s)}
+                        style={{
+                          cursor: "pointer",
+                          backgroundColor: isSelected ? "var(--primary-tint-bg)" : undefined,
+                        }}
+                      >
+                        <td style={{ fontWeight: 700 }}>{s.title}</td>
+                        <td>
+                          {s.fileName || "لم يُختر ملف"}{" "}
+                          {s.sha256Fingerprint ? `(${s.sha256Fingerprint.slice(0, 10)}...)` : ""}
+                        </td>
+                        <td>
+                          {s.bookYear || s.edition
+                            ? `السنة: ${s.bookYear || "—"} | الطبعة: ${s.edition || "—"}`
+                            : "سنة / طبعة / رابط: غير مدخلة"}
+                        </td>
+                        <td>
+                          <span
+                            className={`badge ${
+                              s.verificationStatus === "human_verified" ? "badge-success" : "badge-warning"
+                            }`}
+                          >
+                            {s.verificationStatus === "human_verified"
+                              ? `موثّق (${s.reviewerName})`
+                              : "معلّق · غير موثّق"}
+                          </span>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className={`btn ${isSelected ? "btn-primary" : "btn-secondary"}`}
+                            style={{ padding: "4px 10px", fontSize: "0.75rem" }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              bindSource(s);
+                            }}
+                          >
+                            {isSelected ? "محدّد" : "عرض"}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
-      <div style={{ display: "flex", gap: "10px" }}>
-        <Link href="/curriculum" className="btn btn-secondary">
-          ← العودة إلى المنهج
+      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+        <Link href="/curriculum" className="btn btn-primary">
+          ← متابعة إلى المنهج
+        </Link>
+        <Link href="/lessons" className="btn btn-secondary">
+          الانتقال إلى اختيار الدرس
         </Link>
       </div>
     </div>
   );
 }
-

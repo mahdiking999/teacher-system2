@@ -1,85 +1,147 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { Suspense, useEffect, useState, useCallback } from "react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useTeacherApp, WorkflowStepper } from "../../components/AppShell";
 
-const PACKAGE_ITEMS = [
-  {
-    id: "docx",
-    title: "الخطة اليومية القابلة للتحرير",
-    desc: "ملف OOXML DOCX بجداول وفقرات قابلة للتحرير واتجاه RTL/LTR",
-    badge: "DOCX",
-  },
-  {
-    id: "pdf",
-    title: "نسخة قراءة وطباعة من الخطة اليومية",
-    desc: "ملف PDF 1.7 بنص قابل للتحديد وجداول متجهية",
-    badge: "PDF",
-  },
-  {
-    id: "pptx",
-    title: "عرض تقديمي قابل للتحرير",
-    desc: "شرائح تربوية بنصوص وعناصر وأشكال OOXML قابلة للتحرير في PowerPoint",
-    badge: "PPTX",
-  },
-  {
-    id: "report_pdf",
-    title: "تقرير التخطيط والاكتمال",
-    desc: "ملخص الخطط والمراجعات ونواقص التوثيق دون نسب نجاح طلاب مفترضة",
-    badge: "PDF",
-  },
-  {
-    id: "bundle_zip",
-    title: "حزمة شاملة (تشمل سجل بيانات المصدر JSON + جميع الملفات)",
-    desc: "جميع الملفات الأربعة مع سجل بيانات المصدر وبصمة الإصدار في أرشيف واحد",
-    badge: "ZIP + JSON",
-  },
-];
+function formatPlanStatusLabel(status?: string) {
+  if (status === "approved") return "معتمدة";
+  if (status === "reviewed") return "مكتملة المراجعة";
+  if (status === "needs_revision") return "تحتاج تعديلًا";
+  return "مسودة";
+}
 
-export default function ExportPackagePage() {
+function ExportPackageContent() {
+  const searchParams = useSearchParams();
+  const urlPlanId = searchParams.get("planId") || "";
+
   const { activeContext, activeContextId, apiFetch } = useTeacherApp();
   const [plans, setPlans] = useState<any[]>([]);
+  const [sources, setSources] = useState<any[]>([]);
   const [exportsList, setExportsList] = useState<any[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(true);
   const [busyFormat, setBusyFormat] = useState<string>("");
   const [feedback, setFeedback] = useState<string>("");
+  const [errorMsg, setErrorMsg] = useState<string>("");
+  const [lastExportLink, setLastExportLink] = useState<{ url: string; fileName: string } | null>(null);
 
-  const loadData = async () => {
-    try {
-      const [pRes, eRes] = await Promise.all([
-        apiFetch(`/api/plans?contextId=${encodeURIComponent(activeContextId)}`),
-        apiFetch(`/api/exports?contextId=${encodeURIComponent(activeContextId)}`),
-      ]);
-      const pList = pRes.items || [];
-      setPlans(pList);
-      setExportsList(eRes.items || []);
-      if (pList.length > 0 && !selectedPlanId) {
-        setSelectedPlanId(pList[0].id);
+  const loadData = useCallback(
+    async (isCancelled?: () => boolean) => {
+      if (!activeContextId) {
+        setPlans([]);
+        setSources([]);
+        setExportsList([]);
+        setSelectedPlanId("");
+        setLoading(false);
+        return;
       }
-    } catch (e) {
-      console.error(e);
-    }
-  };
+      setLoading(true);
+      setErrorMsg("");
+      try {
+        const [pRes, eRes, sRes] = await Promise.all([
+          apiFetch(`/api/plans?contextId=${encodeURIComponent(activeContextId)}`),
+          apiFetch(`/api/exports?contextId=${encodeURIComponent(activeContextId)}`),
+          apiFetch(`/api/sources?contextId=${encodeURIComponent(activeContextId)}`),
+        ]);
+        if (isCancelled && isCancelled()) return;
+        const pList = pRes.items || [];
+        setPlans(pList);
+        setExportsList(eRes.items || []);
+        setSources(sRes.items || []);
+
+        setSelectedPlanId((prev) => {
+          if (urlPlanId && pList.some((p: any) => p.id === urlPlanId)) return urlPlanId;
+          if (prev && pList.some((p: any) => p.id === prev)) return prev;
+          return pList[0]?.id || "";
+        });
+      } catch (e: any) {
+        if (!isCancelled || !isCancelled()) {
+          setErrorMsg(e?.message || "تعذر تحميل بيانات التصدير والحزم.");
+        }
+      } finally {
+        if (!isCancelled || !isCancelled()) {
+          setLoading(false);
+        }
+      }
+    },
+    [activeContextId, apiFetch, urlPlanId]
+  );
 
   useEffect(() => {
-    if (activeContextId) loadData();
-  }, [activeContextId]);
+    let cancelled = false;
+    setFeedback("");
+    setErrorMsg("");
+    setLastExportLink(null);
+    setSelectedPlanId("");
+    loadData(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeContextId, urlPlanId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const currentPlan = plans.find((p) => p.id === selectedPlanId) || null;
+  const hasVerifiedSource = sources.some((s: any) => s.verificationStatus === "human_verified");
+  const planTypeNoun =
+    currentPlan?.planType === "weekly"
+      ? "الأسبوعية"
+      : currentPlan?.planType === "five_day"
+      ? "خمسة أيام"
+      : "اليومية";
+
+  const packageItems = [
+    {
+      id: "docx",
+      title: `الخطة ${planTypeNoun} القابلة للتحرير`,
+      desc: "ملف OOXML DOCX بجداول وفقرات قابلة للتحرير واتجاه RTL/LTR",
+      badge: "DOCX",
+    },
+    {
+      id: "pdf",
+      title: `نسخة قراءة وطباعة من الخطة ${planTypeNoun}`,
+      desc: "ملف PDF 1.7 بنص قابل للتحديد وجداول متجهية",
+      badge: "PDF",
+    },
+    {
+      id: "pptx",
+      title: "عرض تقديمي قابل للتحرير",
+      desc: "شرائح تربوية بنصوص وعناصر وأشكال OOXML قابلة للتحرير في PowerPoint",
+      badge: "PPTX",
+    },
+    {
+      id: "report_pdf",
+      title: "تقرير التخطيط والاكتمال",
+      desc: "ملخص الخطط والمراجعات ونواقص التوثيق دون نسب نجاح طلاب مفترضة",
+      badge: "PDF",
+    },
+    {
+      id: "bundle_zip",
+      title: "حزمة شاملة (تشمل سجل بيانات المصدر JSON + جميع الملفات)",
+      desc: "جميع الملفات الأربعة مع سجل بيانات المصدر وبصمة الإصدار في أرشيف واحد",
+      badge: "ZIP + JSON",
+    },
+  ];
 
   const handleGenerateExport = async (fmt: string) => {
+    if (!currentPlan) {
+      setErrorMsg("اختر خطة محفوظة أولًا قبل توليد المخرجات.");
+      return;
+    }
     setBusyFormat(fmt);
     setFeedback("");
+    setErrorMsg("");
+    setLastExportLink(null);
     try {
       const created = await apiFetch("/api/exports", {
         method: "POST",
         body: JSON.stringify({
           contextId: activeContextId,
-          planId: selectedPlanId || null,
+          planId: currentPlan.id,
           exportFormat: fmt,
         }),
       });
+      setLastExportLink({ url: created.downloadUrl, fileName: created.fileName });
       setFeedback(
         `تم إنشاء وفحص الملف (${created.fileName}) للإصدار v${created.planVersion} بنجاح (البصمة SHA-256: ${created.contentSha256.slice(
           0,
@@ -89,7 +151,7 @@ export default function ExportPackagePage() {
       window.open(created.downloadUrl, "_blank");
       await loadData();
     } catch (err: any) {
-      setFeedback(`خطأ: ${err.message}`);
+      setErrorMsg(err?.message || "تعذر توليد الملف المطلوب.");
     } finally {
       setBusyFormat("");
     }
@@ -111,17 +173,30 @@ export default function ExportPackagePage() {
         </span>
       </div>
 
-      <WorkflowStepper activeStep={8} />
+      <WorkflowStepper activeStep={10} />
 
-      <div className="warning-banner">
+      <div className={hasVerifiedSource ? "info-banner" : "warning-banner"}>
         <span>
-          ⚠ سجل منهج تجريبي — غير موثّق: تُرفق حالة التوثيق ولقطة السياق السبعة بكل المخرجات بصدق دون وضع ختم اعتماد كاذب على المسودات.
+          {hasVerifiedSource
+            ? "✓ مصدر المنهج موثّق ومعتمد؛ تُرفق بيانات التوثيق ولقطة السياق السبعة بكل المخرجات."
+            : "⚠ سجل منهج تجريبي — غير موثّق: تُرفق حالة التوثيق ولقطة السياق السبعة بكل المخرجات بصدق دون وضع ختم اعتماد كاذب على المسودات."}
         </span>
       </div>
 
       {feedback && (
         <div className="info-banner" style={{ borderColor: "var(--primary-green)", color: "var(--primary-green)" }}>
           <span>✓ {feedback}</span>
+          {lastExportLink && (
+            <a href={lastExportLink.url} className="btn btn-secondary" style={{ padding: "4px 10px", fontSize: "0.78rem" }}>
+              تنزيل {lastExportLink.fileName}
+            </a>
+          )}
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className="blocker-banner">
+          <span>⛔ {errorMsg}</span>
         </div>
       )}
 
@@ -155,45 +230,58 @@ export default function ExportPackagePage() {
             )}
           </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-            {PACKAGE_ITEMS.map((item) => (
-              <div
-                key={item.id}
-                style={{
-                  padding: "14px 16px",
-                  borderRadius: "12px",
-                  border: "1px solid var(--border-color)",
-                  backgroundColor: "#fbfcfb",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  gap: "12px",
-                  flexWrap: "wrap",
-                }}
-              >
-                <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
-                  <span style={{ color: "var(--primary-green)", fontWeight: 800, fontSize: "1.1rem" }}>☑</span>
-                  <div>
-                    <div style={{ fontWeight: 800, fontSize: "0.95rem" }}>{item.title}</div>
-                    <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>{item.desc}</div>
+          {loading ? (
+            <div style={{ textAlign: "center", padding: "30px 12px", color: "var(--text-secondary)" }}>
+              جارٍ تحميل الخطط وسجل التصدير...
+            </div>
+          ) : plans.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "30px 12px", color: "var(--text-secondary)" }}>
+              <p style={{ marginBottom: "12px" }}>لا توجد خطط محفوظة للتصدير في هذا السياق بعد.</p>
+              <Link href="/daily-plan" className="btn btn-primary">
+                + إنشاء خطة جديدة
+              </Link>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+              {packageItems.map((item) => (
+                <div
+                  key={item.id}
+                  style={{
+                    padding: "14px 16px",
+                    borderRadius: "12px",
+                    border: "1px solid var(--border-color)",
+                    backgroundColor: "#fbfcfb",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: "12px",
+                    flexWrap: "wrap",
+                  }}
+                >
+                  <div style={{ display: "flex", gap: "12px", alignItems: "center", flex: "1 1 220px" }}>
+                    <span style={{ color: "var(--primary-green)", fontWeight: 800, fontSize: "1.1rem" }}>☑</span>
+                    <div>
+                      <div style={{ fontWeight: 800, fontSize: "0.95rem" }}>{item.title}</div>
+                      <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>{item.desc}</div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                    <span className="badge badge-success">{item.badge}</span>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{ padding: "6px 12px", fontSize: "0.8rem" }}
+                      disabled={!!busyFormat || !currentPlan}
+                      onClick={() => handleGenerateExport(item.id)}
+                    >
+                      {busyFormat === item.id ? "جارٍ التوليد..." : `توليد وتنزيل ${item.badge}`}
+                    </button>
                   </div>
                 </div>
-
-                <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-                  <span className="badge badge-success">{item.badge}</span>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    style={{ padding: "6px 12px", fontSize: "0.8rem" }}
-                    disabled={!!busyFormat || !currentPlan}
-                    onClick={() => handleGenerateExport(item.id)}
-                  >
-                    {busyFormat === item.id ? "جارٍ التوليد..." : `توليد وتنزيل ${item.badge}`}
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div>
@@ -204,42 +292,51 @@ export default function ExportPackagePage() {
             </p>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: "16px" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: "0.88rem" }}>{currentPlan?.title || "لا توجد خطة محددة"}</div>
                   <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
-                    الإصدار v{currentPlan?.version || 1} · {currentPlan?.totalAllocatedMinutes || 45} دقيقة
+                    الإصدار v{currentPlan?.version || 1} ·{" "}
+                    {currentPlan?.planType === "daily"
+                      ? `${currentPlan?.totalAllocatedMinutes || 45} دقيقة`
+                      : currentPlan
+                      ? `${(currentPlan.scheduleDays || []).reduce((a: number, d: any) => a + (d.isHoliday ? 0 : Number(d.minutes) || 0), 0)} دقيقة`
+                      : "—"}
                   </div>
                 </div>
-                <span className="badge badge-neutral">خطة</span>
+                <span className="badge badge-neutral">خطة {planTypeNoun}</span>
               </div>
 
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: "0.88rem" }}>المراجعة التربوية</div>
                   <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
-                    حالة الخطة: {currentPlan?.status === "approved" ? "معتمدة" : currentPlan?.status || "مسودة"}
+                    حالة الخطة: {formatPlanStatusLabel(currentPlan?.status)}
                   </div>
                 </div>
                 <span
                   className={`badge ${
                     currentPlan?.status === "approved" || currentPlan?.status === "reviewed"
                       ? "badge-success"
+                      : currentPlan?.status === "needs_revision"
+                      ? "badge-blocker"
                       : "badge-warning"
                   }`}
                 >
-                  {currentPlan?.status === "approved" ? "معتمدة" : "معلّمة كمسودة"}
+                  {formatPlanStatusLabel(currentPlan?.status)}
                 </span>
               </div>
 
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
                 <div>
                   <div style={{ fontWeight: 700, fontSize: "0.88rem" }}>مراجعة المصدر</div>
                   <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
                     تُوثّق في ترويسة المستندات وسجل JSON
                   </div>
                 </div>
-                <span className="badge badge-warning">معلّق</span>
+                <span className={`badge ${hasVerifiedSource ? "badge-success" : "badge-warning"}`}>
+                  {hasVerifiedSource ? "موثّق" : "معلّق"}
+                </span>
               </div>
             </div>
 
@@ -247,7 +344,7 @@ export default function ExportPackagePage() {
               type="button"
               className="btn btn-primary"
               style={{ width: "100%" }}
-              disabled={!!busyFormat}
+              disabled={!!busyFormat || !currentPlan}
               onClick={() => handleGenerateExport("bundle_zip")}
             >
               📦 {busyFormat === "bundle_zip" ? "جارٍ تجميع الحزمة..." : "تجهيز وتنزيل الحزمة الكاملة (ZIP)"}
@@ -302,8 +399,8 @@ export default function ExportPackagePage() {
                       {ex.contentSha256?.slice(0, 18)}...
                     </td>
                     <td>
-                      <span className="badge badge-success">
-                        {ex.structuralCheckPassed ? "✓ سليم وقابل للفتح" : "فشل"}
+                      <span className={`badge ${ex.structuralCheckPassed ? "badge-success" : "badge-blocker"}`}>
+                        {ex.structuralCheckPassed ? "✓ سليم وقابل للفتح" : "فشل الفحص"}
                       </span>
                     </td>
                     <td>
@@ -323,7 +420,7 @@ export default function ExportPackagePage() {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: "10px" }}>
+      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
         <Link href="/presentations" className="btn btn-secondary">
           ← العودة إلى العرض التقديمي
         </Link>
@@ -332,3 +429,10 @@ export default function ExportPackagePage() {
   );
 }
 
+export default function ExportPackagePage() {
+  return (
+    <Suspense fallback={<div className="card">جارٍ التحميل...</div>}>
+      <ExportPackageContent />
+    </Suspense>
+  );
+}

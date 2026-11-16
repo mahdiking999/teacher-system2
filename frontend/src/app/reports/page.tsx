@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useTeacherApp, WorkflowStepper } from "../../components/AppShell";
 
@@ -10,29 +10,69 @@ export default function ReportsPage() {
   const [dateTo, setDateTo] = useState<string>("");
   const [planTypeFilter, setPlanTypeFilter] = useState<string>("all");
   const [report, setReport] = useState<any>(null);
+  const [loading, setLoading] = useState<boolean>(true);
   const [exporting, setExporting] = useState<string>("");
   const [feedback, setFeedback] = useState<string>("");
+  const [errorMsg, setErrorMsg] = useState<string>("");
+  const [lastExportLink, setLastExportLink] = useState<{ url: string; fileName: string } | null>(null);
 
-  const loadReport = async () => {
-    try {
-      const res = await apiFetch(
-        `/api/reports?contextId=${encodeURIComponent(activeContextId)}&dateFrom=${encodeURIComponent(
-          dateFrom
-        )}&dateTo=${encodeURIComponent(dateTo)}&planType=${encodeURIComponent(planTypeFilter)}`
-      );
-      setReport(res);
-    } catch (e) {
-      console.error(e);
-    }
-  };
+  const loadReport = useCallback(
+    async (df: string, dt: string, pt: string, isCancelled?: () => boolean) => {
+      if (!activeContextId) {
+        setReport(null);
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setErrorMsg("");
+      try {
+        const res = await apiFetch(
+          `/api/reports?contextId=${encodeURIComponent(activeContextId)}&dateFrom=${encodeURIComponent(
+            df
+          )}&dateTo=${encodeURIComponent(dt)}&planType=${encodeURIComponent(pt)}`
+        );
+        if (!isCancelled || !isCancelled()) {
+          setReport(res);
+        }
+      } catch (e: any) {
+        if (!isCancelled || !isCancelled()) {
+          setErrorMsg(e?.message || "تعذر تحميل التقرير.");
+        }
+      } finally {
+        if (!isCancelled || !isCancelled()) {
+          setLoading(false);
+        }
+      }
+    },
+    [activeContextId, apiFetch]
+  );
 
   useEffect(() => {
-    if (activeContextId) loadReport();
-  }, [activeContextId]);
+    let cancelled = false;
+    setDateFrom("");
+    setDateTo("");
+    setPlanTypeFilter("all");
+    setFeedback("");
+    setErrorMsg("");
+    setLastExportLink(null);
+    setReport(null);
+    loadReport("", "", "all", () => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeContextId, loadReport]);
+
+  const handleApplyFilters = () => {
+    loadReport(dateFrom, dateTo, planTypeFilter);
+  };
 
   const handleExportReport = async (fmt: "report_pdf" | "report_docx") => {
     setExporting(fmt);
+    setErrorMsg("");
+    setFeedback("");
+    setLastExportLink(null);
     try {
+      await loadReport(dateFrom, dateTo, planTypeFilter);
       const res = await apiFetch("/api/exports", {
         method: "POST",
         body: JSON.stringify({
@@ -43,11 +83,12 @@ export default function ReportsPage() {
           planTypeFilter,
         }),
       });
+      setLastExportLink({ url: res.downloadUrl, fileName: res.fileName });
       window.open(res.downloadUrl, "_blank");
       setFeedback(`تم توليد وتنزيل التقرير بصيغة ${fmt === "report_pdf" ? "PDF" : "DOCX"} بنجاح.`);
-      await loadReport();
+      await loadReport(dateFrom, dateTo, planTypeFilter);
     } catch (err: any) {
-      setFeedback(err.message);
+      setErrorMsg(err?.message || "تعذر تصدير التقرير.");
     } finally {
       setExporting("");
     }
@@ -74,7 +115,7 @@ export default function ReportsPage() {
         </span>
       </div>
 
-      <WorkflowStepper activeStep={6} />
+      <WorkflowStepper activeStep={8} />
 
       {/* Filter Bar matching `التقارير.png` */}
       <div
@@ -110,7 +151,11 @@ export default function ReportsPage() {
           <select
             className="form-select"
             value={planTypeFilter}
-            onChange={(e) => setPlanTypeFilter(e.target.value)}
+            onChange={(e) => {
+              const nextVal = e.target.value;
+              setPlanTypeFilter(nextVal);
+              loadReport(dateFrom, dateTo, nextVal);
+            }}
           >
             <option value="all">جميع أنماط التخطيط</option>
             <option value="daily">يومية</option>
@@ -118,14 +163,25 @@ export default function ReportsPage() {
             <option value="five_day">خمسة أيام</option>
           </select>
         </div>
-        <button type="button" className="btn btn-primary" onClick={loadReport}>
-          📊 عرض التقرير
+        <button type="button" className="btn btn-primary" onClick={handleApplyFilters} disabled={loading}>
+          {loading ? "جارٍ التحديث..." : "📊 عرض التقرير"}
         </button>
       </div>
 
       {feedback && (
         <div className="info-banner" style={{ borderColor: "var(--primary-green)", color: "var(--primary-green)" }}>
           <span>✓ {feedback}</span>
+          {lastExportLink && (
+            <a href={lastExportLink.url} className="btn btn-secondary" style={{ padding: "4px 10px", fontSize: "0.78rem" }}>
+              تنزيل {lastExportLink.fileName}
+            </a>
+          )}
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className="blocker-banner">
+          <span>⛔ {errorMsg}</span>
         </div>
       )}
 
@@ -133,24 +189,24 @@ export default function ReportsPage() {
       <div className="stats-grid-4">
         <div className="stat-card">
           <div className="stat-label">خطط محفوظة إجمالًا</div>
-          <div className="stat-number">{total}</div>
+          <div className="stat-number">{loading ? "..." : total}</div>
           <div className="stat-sub">
             {activeContext?.subject} · {activeContext?.grade}
           </div>
         </div>
         <div className="stat-card">
           <div className="stat-label">خطط مكتملة المراجعة</div>
-          <div className="stat-number">{reviewed}</div>
+          <div className="stat-number">{loading ? "..." : reviewed}</div>
           <div className="stat-sub">لا يعني توثيق المحتوى تلقائيًا</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">مسودات قيد الإعداد</div>
-          <div className="stat-number">{drafts}</div>
+          <div className="stat-number">{loading ? "..." : drafts}</div>
           <div className="stat-sub">تشمل المسودات التي تحتاج استكمال التقويم</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">حالات حزم تصدير</div>
-          <div className="stat-number">{exportsCount}</div>
+          <div className="stat-number">{loading ? "..." : exportsCount}</div>
           <div className="stat-sub">ملفات فعلية مولّدة في هذا السياق</div>
         </div>
       </div>
@@ -211,7 +267,7 @@ export default function ReportsPage() {
           >
             <div style={{ fontWeight: 800, fontSize: "1.05rem", marginBottom: "4px" }}>تقرير التخطيط والاكتمال</div>
             <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "8px" }}>
-              {activeContext?.teacherName || "أحمد علي"}
+              {activeContext?.teacherName || "غير محدد"}
               <br />
               {activeContext?.subject} · {activeContext?.grade} · {activeContext?.country}
             </div>
@@ -227,7 +283,7 @@ export default function ReportsPage() {
             <button
               type="button"
               className="btn btn-secondary"
-              disabled={!!exporting}
+              disabled={!!exporting || !activeContextId}
               onClick={() => handleExportReport("report_pdf")}
               style={{ flex: 1 }}
             >
@@ -236,7 +292,7 @@ export default function ReportsPage() {
             <button
               type="button"
               className="btn btn-secondary"
-              disabled={!!exporting}
+              disabled={!!exporting || !activeContextId}
               onClick={() => handleExportReport("report_docx")}
               style={{ flex: 1 }}
             >

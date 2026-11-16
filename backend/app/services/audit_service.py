@@ -16,12 +16,24 @@ SAFE_OPERATORS = {
 }
 
 
+def _normalize_digits(text: str) -> str:
+    trans = str.maketrans("٠١٢٣٤٥٦٧٨٩", "0123456789")
+    return text.translate(trans)
+
+
 def safe_eval_math_expression(expr_str: str) -> float:
     """
     Safely evaluates arithmetic expressions (integers, floats, +, -, *, /, **)
     while strictly raising ZeroDivisionError on division by zero and ValueError on unsafe syntax.
     """
-    cleaned = expr_str.strip().replace("×", "*").replace("÷", "/").replace("^", "**").replace("−", "-")
+    cleaned = (
+        _normalize_digits(str(expr_str or ""))
+        .strip()
+        .replace("×", "*")
+        .replace("÷", "/")
+        .replace("^", "**")
+        .replace("−", "-")
+    )
     if not cleaned:
         raise ValueError("التعبير الرياضي فارغ.")
 
@@ -57,9 +69,9 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
     provenance = "مثال توضيحي غير موثق من الكتاب"
 
     if tool_type == "math_solver":
-        expression = str(inputs.get("expression", "")).strip()
+        expression = str(inputs.get("expression") or "").strip()
         claimed_answer = inputs.get("claimedAnswer", None)
-        unit = str(inputs.get("unit", "")).strip()
+        unit = str(inputs.get("unit") or "").strip()
         try:
             computed = safe_eval_math_expression(expression)
         except ZeroDivisionError as zde:
@@ -86,11 +98,12 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
         mismatch_note = ""
         if claimed_answer is not None and str(claimed_answer).strip() != "":
             try:
-                claimed_float = float(str(claimed_answer).strip())
+                claimed_str = _normalize_digits(str(claimed_answer).strip())
+                claimed_float = safe_eval_math_expression(claimed_str) if "/" in claimed_str else float(claimed_str)
                 if not math.isclose(computed, claimed_float, rel_tol=1e-6, abs_tol=1e-6):
                     answer_matches = False
                     mismatch_note = f"الحل المدخل ({claimed_answer}) لا يطابق النتيجة الصحيحة ({formatted_val})."
-            except ValueError:
+            except (ValueError, ZeroDivisionError):
                 answer_matches = False
                 mismatch_note = f"الحل المدخل ({claimed_answer}) ليس عددًا صالحًا."
 
@@ -123,9 +136,9 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
         }
 
     if tool_type == "text_analysis":
-        passage = str(inputs.get("passage", "")).strip()
-        author_or_source = str(inputs.get("authorOrSource", "")).strip()
-        literary_focus = str(inputs.get("focus", "الفكرة الرئيسة والدلالات اللغوية والبلاغية")).strip()
+        passage = str(inputs.get("passage") or "").strip()
+        author_or_source = str(inputs.get("authorOrSource") or "").strip()
+        literary_focus = str(inputs.get("focus") or "الفكرة الرئيسة والدلالات اللغوية والبلاغية").strip()
         if not passage:
             return {
                 "valid": False,
@@ -167,7 +180,7 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
 
     if tool_type == "historical_timeline":
         events: List[Dict[str, Any]] = inputs.get("events", [])
-        if not events or not isinstance(events, list):
+        if not events or not isinstance(events, list) or len(events) < 2:
             return {
                 "valid": False,
                 "errorCode": "EMPTY_TIMELINE",
@@ -180,9 +193,17 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
         prev_year = None
         missing_evidence = False
         for idx, ev in enumerate(events):
-            yr_raw = str(ev.get("year", "")).strip()
-            ev_title = str(ev.get("event", "")).strip()
-            evidence = str(ev.get("evidence", "")).strip()
+            if not isinstance(ev, dict):
+                return {
+                    "valid": False,
+                    "errorCode": "INCOMPLETE_EVENT",
+                    "message": f"تنسيق الحدث رقم {idx + 1} غير صالح.",
+                    "provenanceLabel": provenance,
+                    "editableOutput": "",
+                }
+            yr_raw = str(ev.get("year") or "").strip()
+            ev_title = str(ev.get("event") or "").strip()
+            evidence = str(ev.get("evidence") or "").strip()
             if not yr_raw or not ev_title:
                 return {
                     "valid": False,
@@ -191,8 +212,19 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
                     "provenanceLabel": provenance,
                     "editableOutput": "",
                 }
-            m = re.search(r"(-?\d+)", yr_raw)
-            yr_num = int(m.group(1)) if m else idx
+            yr_norm = _normalize_digits(yr_raw)
+            m = re.search(r"(-?\d+)", yr_norm)
+            if not m:
+                return {
+                    "valid": False,
+                    "errorCode": "INCOMPLETE_EVENT",
+                    "message": f"تعذر قراءة السنة في الحدث رقم {idx + 1}.",
+                    "provenanceLabel": provenance,
+                    "editableOutput": "",
+                }
+            yr_num = int(m.group(1))
+            if ("ق.م" in yr_norm or "bce" in yr_norm.lower() or "bc" in yr_norm.lower()) and yr_num > 0:
+                yr_num = -yr_num
             if prev_year is not None and yr_num < prev_year:
                 chronology_valid = False
             prev_year = yr_num
@@ -223,10 +255,10 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
         }
 
     if tool_type == "science_experiment":
-        hypothesis = str(inputs.get("hypothesis", "")).strip()
-        variables = str(inputs.get("variables", "")).strip()
-        safety = str(inputs.get("safety", "ارتداء النظارات الواقية وإشراف المعلم")).strip()
-        measurement_unit = str(inputs.get("unit", "")).strip()
+        hypothesis = str(inputs.get("hypothesis") or "").strip()
+        variables = str(inputs.get("variables") or "").strip()
+        safety = str(inputs.get("safety") or "ارتداء النظارات الواقية وإشراف المعلم").strip()
+        measurement_unit = str(inputs.get("unit") or "").strip()
         if not hypothesis:
             return {
                 "valid": False,
@@ -326,7 +358,7 @@ def audit_plan_and_context(
         )
 
     # 1. Formative Assessment check (Ref: مراجعة الخطة.png top blocker card)
-    formative = str(plan_data.get("formativeAssessment", "")).strip()
+    formative = str(plan_data.get("formativeAssessment") or "").strip()
     if not formative:
         add_finding(
             category="BLOCKER",
@@ -374,7 +406,12 @@ def audit_plan_and_context(
             in_class_minutes = 0
             parts_str = []
             for idx, ph in enumerate(phases):
-                m = int(ph.get("minutes", 0) or 0)
+                if not isinstance(ph, dict):
+                    continue
+                try:
+                    m = int(float(ph.get("minutes") if ph.get("minutes") is not None else 0))
+                except (ValueError, TypeError):
+                    m = -1
                 if m < 0:
                     negative_found = True
                 if not ph.get("isHomeEnrichment", False):
@@ -420,7 +457,19 @@ def audit_plan_and_context(
     else:
         # Weekly or five_day plan schedule check
         days = plan_data.get("scheduleDays", [])
-        unscheduled = [d.get("dayName", "") for d in days if not d.get("isHoliday") and not str(d.get("lessonTitle", "")).strip()]
+        unscheduled = [d.get("dayName", "") for d in days if isinstance(d, dict) and not d.get("isHoliday") and not str(d.get("lessonTitle") or "").strip()]
+        teaching_days = [d for d in days if isinstance(d, dict) and not d.get("isHoliday")]
+        negative_day_min = False
+        total_min = 0
+        for d in teaching_days:
+            try:
+                dm = int(float(d.get("minutes") if d.get("minutes") is not None else period_minutes))
+            except (ValueError, TypeError):
+                dm = -1
+            if dm < 0:
+                negative_day_min = True
+            total_min += max(0, dm)
+
         if not days:
             add_finding(
                 category="BLOCKER",
@@ -431,6 +480,28 @@ def audit_plan_and_context(
                 field_target="scheduleDays",
                 remediation="أضف أيام التدريس وحدد الدرس والهدف والتقويم لكل يوم.",
                 evidence="scheduleDays=[]",
+            )
+        elif negative_day_min:
+            add_finding(
+                category="BLOCKER",
+                severity="critical",
+                code="NEGATIVE_SCHEDULE_DURATION",
+                title="زمن سالب في أحد أيام الجدول",
+                description="لا يجوز إدخال مدة زمنية سالبة لأي يوم تدريس.",
+                field_target="scheduleDays",
+                remediation="صحح أزمنة الأيام لتكون موجبة.",
+                evidence=str(days),
+            )
+        elif plan_type == "five_day" and len(teaching_days) < 5:
+            add_finding(
+                category="BLOCKER",
+                severity="critical",
+                code="INCOMPLETE_FIVE_DAY_COUNT",
+                title="خطة خمسة أيام لا تحتوي على 5 أيام تدريس",
+                description=f"عدد أيام التدريس الفعلية حاليًا ({len(teaching_days)}) أقل من 5 أيام تدريس متميزة.",
+                field_target="scheduleDays",
+                remediation="أضف 5 أيام تدريس متميزة غير معطّلة في خطة الخمسة أيام.",
+                evidence=f"teaching_days={len(teaching_days)}",
             )
         elif unscheduled:
             add_finding(
@@ -444,13 +515,12 @@ def audit_plan_and_context(
                 evidence=f"Unscheduled: {unscheduled}",
             )
         else:
-            total_min = sum(int(d.get("minutes", period_minutes) or 0) for d in days if not d.get("isHoliday"))
             add_finding(
                 category="PASSED",
                 severity="info",
                 code="SCHEDULE_DAYS_VALID",
                 title="توزيع أيام التدريس والزمن مكتمل",
-                description=f"تم جدولة {len([d for d in days if not d.get('isHoliday')])} أيام تدريس بإجمالي {total_min} دقيقة.",
+                description=f"تم جدولة {len(teaching_days)} أيام تدريس بإجمالي {total_min} دقيقة.",
                 field_target="scheduleDays",
                 remediation="لا يلزم إجراء.",
                 evidence=f"Total minutes: {total_min}",

@@ -50,8 +50,14 @@ export function useTeacherApp() {
   return ctx;
 }
 
+function isRtlLanguage(lang?: string): boolean {
+  const lower = (lang || "ar").toLowerCase();
+  return lower.startsWith("ar") || lower.startsWith("ku") || lower.startsWith("fa") || lower.startsWith("he");
+}
+
 const NAV_ITEMS = [
   { href: "/", labelAr: "لوحة المعلم", labelEn: "Dashboard", icon: "⊞" },
+  { href: "/sources", labelAr: "استيراد كتاب المنهج", labelEn: "Import Curriculum PDF", icon: "📤" },
   { href: "/curriculum", labelAr: "المنهج", labelEn: "Curriculum", icon: "📖" },
   { href: "/lessons", labelAr: "اختيار الدرس", labelEn: "Lessons", icon: "☰" },
   { href: "/tools", labelAr: "الوسائل وأدوات المدرس", labelEn: "Teacher Tools & Aids", icon: "📏" },
@@ -66,14 +72,16 @@ const NAV_ITEMS = [
 ];
 
 export const WORKFLOW_STEPS = [
-  { step: 1, label: "المنهج", href: "/curriculum" },
-  { step: 2, label: "الدرس", href: "/lessons" },
-  { step: 3, label: "الوسائل", href: "/tools" },
-  { step: 4, label: "الإعداد", href: "/settings" },
-  { step: 5, label: "المراجعة", href: "/review" },
-  { step: 6, label: "التقارير", href: "/reports" },
-  { step: 7, label: "العروض", href: "/presentations" },
-  { step: 8, label: "التصدير", href: "/export-package" },
+  { step: 1, label: "المصدر", href: "/sources" },
+  { step: 2, label: "المنهج", href: "/curriculum" },
+  { step: 3, label: "الدرس", href: "/lessons" },
+  { step: 4, label: "الوسائل", href: "/tools" },
+  { step: 5, label: "الإعداد", href: "/settings" },
+  { step: 6, label: "بناء الخطة", href: "/daily-plan" },
+  { step: 7, label: "المراجعة", href: "/review" },
+  { step: 8, label: "التقارير", href: "/reports" },
+  { step: 9, label: "العروض", href: "/presentations" },
+  { step: 10, label: "التصدير", href: "/export-package" },
 ];
 
 export function WorkflowStepper({ activeStep }: { activeStep: number }) {
@@ -97,29 +105,33 @@ export function WorkflowStepper({ activeStep }: { activeStep: number }) {
   );
 }
 
+const buildCleanCtxForm = (teacherName = "") => ({
+  subject: "",
+  grade: "",
+  country: "",
+  curriculumName: "",
+  language: "ar",
+  year: "",
+  edition: "",
+  teacherName,
+  schoolName: "",
+  sectionName: "",
+  defaultPeriodMinutes: 45,
+});
+
 export function AppShellProvider({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [contexts, setContexts] = useState<EducationalContextItem[]>([]);
   const [activeContextId, setActiveContextId] = useState<string>("");
   const [loadingContext, setLoadingContext] = useState<boolean>(true);
+  const [contextError, setContextError] = useState<string>("");
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [showModal, setShowModal] = useState<boolean>(false);
+  const [creatingContext, setCreatingContext] = useState<boolean>(false);
+  const [modalError, setModalError] = useState<string>("");
 
   // New Context Form State — Starts 100% clean with NO assumed subject, grade, country, or teacher
-  const [newCtxForm, setNewCtxForm] = useState({
-    subject: "",
-    grade: "",
-    country: "",
-    curriculumName: "",
-    language: "ar",
-    year: "",
-    edition: "",
-    teacherName: "",
-    schoolName: "",
-    sectionName: "",
-    defaultPeriodMinutes: 45,
-  });
-
+  const [newCtxForm, setNewCtxForm] = useState(() => buildCleanCtxForm(""));
   const [savedTeacherName, setSavedTeacherName] = useState<string>("");
 
   useEffect(() => {
@@ -133,26 +145,32 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const refreshContexts = useCallback(async () => {
+    setContextError("");
     try {
       const res = await fetch("/api/contexts", { cache: "no-store" });
-      if (res.ok) {
-        const data = await res.json();
-        const list: EducationalContextItem[] = data.items || [];
-        setContexts(list);
-        if (list.length === 0) {
-          setActiveContextId("");
-          setShowModal(true); // Automatically show first-use onboarding setup
-        } else {
-          const savedId = typeof window !== "undefined" ? window.localStorage.getItem("agy_active_context_id") : null;
-          if (savedId && list.some((c) => c.id === savedId)) {
-            setActiveContextId(savedId);
-          } else {
-            setActiveContextId(list[0].id);
-          }
+      if (!res.ok) {
+        throw new Error(`تعذر تحميل السياقات التعليمية من الخادم (${res.status}).`);
+      }
+      const data = await res.json();
+      const list: EducationalContextItem[] = data.items || [];
+      setContexts(list);
+      if (list.length === 0) {
+        setActiveContextId("");
+        if (typeof window !== "undefined") {
+          window.localStorage.removeItem("agy_active_context_id");
+        }
+        setShowModal(true); // Automatically show first-use onboarding setup
+      } else {
+        const savedId = typeof window !== "undefined" ? window.localStorage.getItem("agy_active_context_id") : null;
+        const resolvedId = savedId && list.some((c) => c.id === savedId) ? savedId : list[0].id;
+        setActiveContextId(resolvedId);
+        if (typeof window !== "undefined") {
+          window.localStorage.setItem("agy_active_context_id", resolvedId);
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed loading contexts:", err);
+      setContextError(err?.message || "تعذر الاتصال بالخادم لتحميل السياقات التعليمية.");
     } finally {
       setLoadingContext(false);
     }
@@ -176,9 +194,8 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (activeContext && typeof document !== "undefined") {
       const lang = activeContext.language || "ar";
-      const isRtl = lang.toLowerCase().startsWith("ar") || lang.toLowerCase().startsWith("ku") || lang.toLowerCase().startsWith("fa") || lang.toLowerCase().startsWith("he");
       document.documentElement.lang = lang;
-      document.documentElement.dir = isRtl ? "rtl" : "ltr";
+      document.documentElement.dir = isRtlLanguage(lang) ? "rtl" : "ltr";
     }
   }, [activeContext]);
 
@@ -188,6 +205,18 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
       window.localStorage.setItem("agy_active_context_id", ctxId);
     }
   }, []);
+
+  const openNewContextModal = useCallback(() => {
+    setModalError("");
+    setNewCtxForm(buildCleanCtxForm(savedTeacherName));
+    setShowModal(true);
+  }, [savedTeacherName]);
+
+  const closeNewContextModal = useCallback(() => {
+    setModalError("");
+    setNewCtxForm(buildCleanCtxForm(savedTeacherName));
+    setShowModal(false);
+  }, [savedTeacherName]);
 
   const apiFetch = useCallback(
     async (path: string, options: RequestInit = {}) => {
@@ -220,10 +249,12 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
 
   const handleCreateContext = async (e: React.FormEvent) => {
     e.preventDefault();
+    setCreatingContext(true);
+    setModalError("");
     try {
-      if (typeof window !== "undefined" && newCtxForm.teacherName) {
-        window.localStorage.setItem("agy_teacher_name", newCtxForm.teacherName);
-        setSavedTeacherName(newCtxForm.teacherName);
+      if (typeof window !== "undefined" && newCtxForm.teacherName.trim()) {
+        window.localStorage.setItem("agy_teacher_name", newCtxForm.teacherName.trim());
+        setSavedTeacherName(newCtxForm.teacherName.trim());
       }
       const created = await apiFetch("/api/contexts", {
         method: "POST",
@@ -231,13 +262,17 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
       });
       await refreshContexts();
       switchContext(created.id);
+      setNewCtxForm(buildCleanCtxForm(newCtxForm.teacherName.trim() || savedTeacherName));
       setShowModal(false);
     } catch (err: any) {
-      alert(err.message);
+      setModalError(err?.message || "تعذر إنشاء السياق التعليمي.");
+    } finally {
+      setCreatingContext(false);
     }
   };
 
-  const uiIsRtl = !activeContext || (activeContext.language || "ar").startsWith("ar");
+  const uiIsRtl = !activeContext || isRtlLanguage(activeContext.language);
+  const displayTeacherName = activeContext ? activeContext.teacherName : savedTeacherName;
 
   return (
     <TeacherAppContext.Provider
@@ -249,7 +284,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
         switchContext,
         refreshContexts,
         apiFetch,
-        openNewContextModal: () => setShowModal(true),
+        openNewContextModal,
       }}
     >
       <div className="app-shell">
@@ -262,8 +297,18 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
               </div>
               <div className="brand-subtitle">مساحة التخطيط لأي مادة ومنهج</div>
             </div>
-            <div className="brand-icon-box" aria-hidden="true">
-              📖
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <div className="brand-icon-box" aria-hidden="true">
+                📖
+              </div>
+              <button
+                type="button"
+                className="sidebar-close-btn"
+                onClick={() => setSidebarOpen(false)}
+                aria-label="إغلاق القائمة الجانبية"
+              >
+                ✕
+              </button>
             </div>
           </div>
 
@@ -297,7 +342,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
               ) : (
                 <button
                   type="button"
-                  onClick={() => setShowModal(true)}
+                  onClick={openNewContextModal}
                   style={{
                     width: "100%",
                     background: "#226650",
@@ -316,8 +361,9 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
               {contexts.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => setShowModal(true)}
+                  onClick={openNewContextModal}
                   title="إضافة سياق تعليمي جديد"
+                  aria-label="إضافة سياق تعليمي جديد"
                   style={{
                     background: "#226650",
                     color: "#fff",
@@ -349,16 +395,6 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
                 </Link>
               );
             })}
-
-            <div className="sidebar-section-label">إدارة المصادر</div>
-            <Link
-              href="/sources"
-              onClick={() => setSidebarOpen(false)}
-              className={`sidebar-link ${pathname === "/sources" ? "active" : ""}`}
-            >
-              <span aria-hidden="true">📤</span>
-              <span>استيراد كتاب المنهج</span>
-            </Link>
           </nav>
 
           <div className="sidebar-source-status">
@@ -402,11 +438,28 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
               >
                 ☰ القائمة
               </button>
-              <span>
-                {activeContext
-                  ? `${activeContext.subject} · ${activeContext.grade} · ${activeContext.country}`
-                  : "لم يتم تحديد سياق بعد — اضغط لإعداد سياقك التعليمي"}
-              </span>
+              {activeContext ? (
+                <span>
+                  {activeContext.subject} · {activeContext.grade} · {activeContext.country}
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  onClick={openNewContextModal}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    color: "var(--text-main)",
+                    fontWeight: 700,
+                    fontSize: "0.9rem",
+                    cursor: "pointer",
+                    textAlign: "start",
+                    padding: 0,
+                  }}
+                >
+                  لم يتم تحديد سياق بعد — اضغط لإعداد سياقك التعليمي
+                </button>
+              )}
               {activeContext?.missingContextFields && activeContext.missingContextFields.length > 0 && (
                 <span className="badge badge-warning" title="الحقول غير المعروفة تُترك فارغة مع تنبيه بدل تخمينها">
                   تنبيه سياق: ينقص ({activeContext.missingContextFields.join("، ")})
@@ -415,7 +468,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
               {!activeContext && (
                 <button
                   type="button"
-                  onClick={() => setShowModal(true)}
+                  onClick={openNewContextModal}
                   className="badge badge-success"
                   style={{ cursor: "pointer", border: "none" }}
                 >
@@ -426,29 +479,49 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
 
             <div className="top-bar-user">
               <div className="avatar-circle">
-                {(activeContext?.teacherName || savedTeacherName)?.trim()
-                  ? (activeContext?.teacherName || savedTeacherName).trim().slice(0, 2)
-                  : "👤"}
+                {displayTeacherName?.trim() ? displayTeacherName.trim().slice(0, 2) : "👤"}
               </div>
               <span style={{ fontWeight: 600 }}>
-                {activeContext?.teacherName || savedTeacherName || (
+                {displayTeacherName || (
                   <button
                     type="button"
-                    onClick={() => setShowModal(true)}
-                    style={{ background: "none", border: "none", color: "var(--primary-green)", cursor: "pointer", fontWeight: 700 }}
+                    onClick={activeContext ? undefined : openNewContextModal}
+                    style={{
+                      background: "none",
+                      border: "none",
+                      color: activeContext ? "var(--text-muted)" : "var(--primary-green)",
+                      cursor: activeContext ? "default" : "pointer",
+                      fontWeight: 700,
+                    }}
                   >
-                    أدخل اسمك الكريم
+                    {activeContext ? "اسم المعلم غير محدد" : "أدخل اسمك الكريم"}
                   </button>
                 )}
               </span>
             </div>
           </header>
 
-          <main className="page-container">{children}</main>
+          <main className="page-container">
+            {contextError && (
+              <div className="blocker-banner">
+                <span>⛔ {contextError}</span>
+                <button type="button" className="btn btn-secondary" onClick={refreshContexts}>
+                  ↻ إعادة المحاولة
+                </button>
+              </div>
+            )}
+            {children}
+          </main>
 
           <footer className="app-footer">
             <span>للتخطيط التربوي · توثيق المصدر مطلوب قبل الاستخدام الرسمي</span>
-            <span>متصل بخدمة Python FastAPI · عزل السياقات مفعّل ({activeContext?.id})</span>
+            <span>
+              {contextError
+                ? "حالة الخادم: تعذر الاتصال بـ FastAPI"
+                : activeContext
+                ? `متصل بخدمة التخطيط · عزل السياقات مفعّل (${activeContext.subject})`
+                : "بانتظار إعداد السياق التعليمي"}
+            </span>
           </footer>
         </div>
       </div>
@@ -479,12 +552,17 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
                 ? "أدخل اسمك أولاً وأنشئ سياقك التعليمي للبدء فوراً. لا توجد أي مادة أو صف مفروضين مسبقًا."
                 : "أنشئ سياقًا تعليميًا معزولاً لأي مادة ومنهج وصف وبلد مع حفظ إعداداته."}
             </p>
+            {modalError && (
+              <div className="blocker-banner">
+                <span>⛔ {modalError}</span>
+              </div>
+            )}
             <form onSubmit={handleCreateContext}>
               <div style={{ backgroundColor: "#fbfcfb", padding: "12px", borderRadius: "10px", border: "1px solid var(--border-color)", marginBottom: "14px" }}>
                 <div style={{ fontWeight: 700, fontSize: "0.88rem", marginBottom: "8px", color: "var(--primary-green)" }}>
                   1. بيانات المعلم والمدرسة
                 </div>
-                <div className="equal-split-grid">
+                <div className="stats-grid-3" style={{ marginBottom: 0 }}>
                   <div className="form-group" style={{ marginBottom: 0 }}>
                     <label className="form-label">اسم المعلم / المعلمة *</label>
                     <input
@@ -496,12 +574,21 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
                     />
                   </div>
                   <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">المدرسة أو الشعبة (اختياري)</label>
+                    <label className="form-label">المدرسة (اختياري)</label>
                     <input
                       className="form-input"
-                      placeholder="مثال: ثانوية الأمل · الشعبة ب"
+                      placeholder="مثال: ثانوية الأمل"
                       value={newCtxForm.schoolName}
                       onChange={(e) => setNewCtxForm({ ...newCtxForm, schoolName: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label">الشعبة (اختياري)</label>
+                    <input
+                      className="form-input"
+                      placeholder="مثال: الشعبة أ"
+                      value={newCtxForm.sectionName}
+                      onChange={(e) => setNewCtxForm({ ...newCtxForm, sectionName: e.target.value })}
                     />
                   </div>
                 </div>
@@ -554,9 +641,9 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
                     />
                   </div>
                 </div>
-                <div className="stats-grid-3">
+                <div className="stats-grid-4" style={{ marginBottom: 0 }}>
                   <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">لغة السياق (language)</label>
+                    <label className="form-label">لغة السياق</label>
                     <select
                       className="form-select"
                       value={newCtxForm.language}
@@ -569,19 +656,32 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
                     </select>
                   </div>
                   <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">السنة (year - اختياري)</label>
+                    <label className="form-label">زمن الحصة (د)</label>
+                    <input
+                      type="number"
+                      min={10}
+                      max={180}
+                      className="form-input"
+                      value={newCtxForm.defaultPeriodMinutes}
+                      onChange={(e) =>
+                        setNewCtxForm({ ...newCtxForm, defaultPeriodMinutes: Math.max(5, Number(e.target.value) || 45) })
+                      }
+                    />
+                  </div>
+                  <div className="form-group" style={{ marginBottom: 0 }}>
+                    <label className="form-label">السنة (اختياري)</label>
                     <input
                       className="form-input"
-                      placeholder="تُترك فارغة إن لم تُعرف"
+                      placeholder="تُترك فارغة"
                       value={newCtxForm.year}
                       onChange={(e) => setNewCtxForm({ ...newCtxForm, year: e.target.value })}
                     />
                   </div>
                   <div className="form-group" style={{ marginBottom: 0 }}>
-                    <label className="form-label">الطبعة (edition - اختياري)</label>
+                    <label className="form-label">الطبعة (اختياري)</label>
                     <input
                       className="form-input"
-                      placeholder="تُترك فارغة إن لم تُعرف"
+                      placeholder="تُترك فارغة"
                       value={newCtxForm.edition}
                       onChange={(e) => setNewCtxForm({ ...newCtxForm, edition: e.target.value })}
                     />
@@ -591,12 +691,16 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
 
               <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end", marginTop: "16px" }}>
                 {contexts.length > 0 && (
-                  <button type="button" className="btn btn-secondary" onClick={() => setShowModal(false)}>
+                  <button type="button" className="btn btn-secondary" onClick={closeNewContextModal} disabled={creatingContext}>
                     إلغاء
                   </button>
                 )}
-                <button type="submit" className="btn btn-primary">
-                  {contexts.length === 0 ? "حفظ وبدء التخطيط ←" : "حفظ وتفعيل السياق"}
+                <button type="submit" className="btn btn-primary" disabled={creatingContext}>
+                  {creatingContext
+                    ? "جارٍ الحفظ..."
+                    : contexts.length === 0
+                    ? "حفظ وبدء التخطيط ←"
+                    : "حفظ وتفعيل السياق"}
                 </button>
               </div>
             </form>
@@ -606,4 +710,3 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
     </TeacherAppContext.Provider>
   );
 }
-

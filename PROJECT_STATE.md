@@ -2,9 +2,13 @@
 
 - **آخر تحديث:** 2026-11-17
 - **الحالة العامة:**
-  - اكتملت **الدفعات 0 و1 و2 و3 و4 و5** مع تحقق مستقل وأدلة موثقة: الإطلاق الإنتاجي السحابي على Render Free Tier مع قاعدة بيانات PostgreSQL الدائمة (`https://teachersys.onrender.com`) + الاستخراج الحقيقي لملفات PDF العربية (`PyMuPDF`) ومحرك توليد الشرائح والخطط والرؤية الذكية عبر **OmniRoute / NVIDIA NIM**.
+  - اكتملت **الدفعات 0 و1 و2 و3 و4 و5 + تدقيق جاهزية المعلم وإصلاحاته الشاملة (Batch 5.5)** مع تحقق مستقل وأدلة موثقة: الإطلاق الإنتاجي السحابي على Render Free Tier مع قاعدة بيانات PostgreSQL الدائمة (`https://teachersys.onrender.com`) + الاستخراج الحقيقي لملفات PDF العربية (`PyMuPDF`) + محرك توليد الشرائح والخطط والرؤية الذكية عبر **OmniRoute / NVIDIA NIM** + معالجة شاملة لتصدير PDF العربي وتأمين السياقات وتجربة المستخدم عبر الـ 13 شاشة (`docs/TEACHER_READINESS_AUDIT.md`).
 - **حالة الاختبارات والتحقق (المُثبتة فعليًا):**
-  - **الدفعة 5 — أحدث مرحلة مكتملة ومُتحقق منها (`handoff/verification_test_output.log`):**
+  - **تدقيق جاهزية المعلم والإصلاحات الشاملة (Batch 5.5 — أحدث مرحلة مكتملة ومُتحقق منها في `handoff/verification_test_output.log` و `docs/TEACHER_READINESS_AUDIT.md`):**
+    - اختبارات الخلفية والتدقيق واستخراج PDF وتصدير RTL والذكاء الاصطناعي والأمان (`pytest backend/tests/ -v`): **26/26 اختبارًا ناجحًا (`26 passed in 1.79s`)**.
+    - فحص TypeScript (`npx tsc --noEmit`): **ناجح (`exit 0`)**.
+    - بناء الإنتاج (`NODE_OPTIONS="--max-old-space-size=400" npm run build`): **15/15 مسارًا في Next.js مبني بنجاح (`exit 0`, `226ms`)**.
+  - **الدفعة 5 — مرحلة سابقة مكتملة (`handoff/verification_test_output.log`):**
     - اختبارات الخلفية والتدقيق واستخراج PDF العربي والذكاء الاصطناعي (`pytest backend/tests/ -v`): **21/21 اختبارًا ناجحًا (`21 passed in 1.34s`)**.
     - التحقق الحي عبر **OmniRoute / NVIDIA NIM**: نجاح توليد 5 شرائح عربية حية عبر `nv-nemotron-3-5-bolt-e4b`، ونجاح استخراج النص العربي والكسور عبر Vision OCR (`nv-nemotron-3-nano-omni-30b`) من صفحة PDF محوّلة إلى PNG عبر `PyMuPDF`.
     - بناء الواجهة الإنتاجي المستقل (`NODE_OPTIONS=--max-old-space-size=400 npm run build` في `frontend/`): **15/15 مسار Next.js مبني بنجاح** مع توليد `frontend/.next/standalone/server.js`.
@@ -76,6 +80,18 @@
   - `/sources`: أزرار استخراج النص بالرؤية الذكية (Vision OCR) وبناء الفصول والدروس تلقائيًا من الكتاب المنهجي.
   - `/daily-plan`: شريط صياغة الخطة والأنشطة اليومية بالذكاء الاصطناعي (NVIDIA NIM).
 - **نتائج التحقق المعتمدة للدفعة 5:** **21/21 اختبار `pytest` ناجح في 1.34s** + **15/15 مسار Next.js Standalone مبني بنجاح** + تحقق حي مباشر مع OmniRoute لتوليد الشرائح والرؤية الذكية OCR.
+
+### تدقيق جاهزية المعلم والإصلاحات الشاملة (Batch 5.5 — 2026-11-17):
+- **تغطية التدقيق متعدد الوكلاء (`docs/TEACHER_READINESS_AUDIT.md`):**
+  - تدقيق الخلفية والتصدير ومحرك الذكاء الاصطناعي (`pytest`, 30+ نقطة API، 5 أدوات تخصصية، 6 صيغ تصدير، OmniRoute الحي).
+  - تدقيق الإنتاج الحي على Render (`https://teachersys.onrender.com` على `7bd209a`).
+  - تدقيق جميع شاشات الواجهة الأمامية الـ 13 وسير عمل المعلم الفعلي.
+- **الإصلاحات المنفذة:**
+  - تصدير PDF عربي فعلي عبر `pymupdf.Story` + `subset_fonts()` بدون تشويه WinAnsi، وإصلاح شرائح المقارنة واستمرارية `(تابع)` في PPTX وتقارير `report_docx`.
+  - تقوية `_extract_json_from_text` و `_normalize_phases_minutes` و `_sanitize_slides` في `ai_service.py`، ورفع حد `PyMuPDF` إلى `MAX_PDF_PAGES` (`600`) مع `NFKC`.
+  - دعم الأرقام الهندية `٠-٩` والكسور وتاريخ `ق.م` وقيود 5 أيام في `audit_service.py`، وعزل السياقات وتوسيع النسخ الاحتياطي FK-ordered في `main.py` و `migration_and_backup.py`.
+  - إصلاحات الواجهة عبر جميع الـ 13 مسارًا (`NAV_ITEMS` مع `/sources`, `Suspense`, عزل السياق، حفظ النماذج، وأخطاء `blocker-banner`).
+- **نتائج التحقق النهائية المعتمدة:** **26/26 اختبار `pytest` ناجح في 1.79s** + **`npx tsc --noEmit` (`exit 0`)** + **15/15 مسار Next.js مبني بنجاح (`exit 0`)**.
 
 ---
 

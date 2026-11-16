@@ -10,7 +10,9 @@ export default function PlanSettingsPage() {
   const { activeContext, activeContextId, apiFetch, refreshContexts, openNewContextModal } = useTeacherApp();
   const [planningMode, setPlanningMode] = useState<"daily" | "weekly" | "five_day">("daily");
   const [templates, setTemplates] = useState<any[]>([]);
+  const [saving, setSaving] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<string>("");
+  const [errorMsg, setErrorMsg] = useState<string>("");
 
   // 7 Explicit Context Fields + Teacher & Schedule Settings
   const [subject, setSubject] = useState<string>("");
@@ -29,14 +31,18 @@ export default function PlanSettingsPage() {
   const [defaultPeriodsCount, setDefaultPeriodsCount] = useState<number>(1);
   const [schoolDaysText, setSchoolDaysText] = useState<string>("الأحد، الاثنين، الثلاثاء، الأربعاء، الخميس");
   const [holidaysText, setHolidaysText] = useState<string>("الجمعة، السبت");
-  const [objectivesText, setObjectivesText] = useState<string>(
-    "أن يشرح الطالب طريقة تفكيره في نشاط يحدّده المعلم.\nأن يقارن بين استراتيجيتين في مهمة يختارها المعلم."
-  );
+  const [objectivesText, setObjectivesText] = useState<string>("");
   const [planningNote, setPlanningNote] = useState<string>("");
   const [pedagogicalAidEnabled, setPedagogicalAidEnabled] = useState<boolean>(true);
 
   useEffect(() => {
+    setFeedback("");
+    setErrorMsg("");
+  }, [activeContextId]);
+
+  useEffect(() => {
     if (activeContext) {
+      const prefs = activeContext.documentPreferences || {};
       setSubject(activeContext.subject || "");
       setGrade(activeContext.grade || "");
       setCountry(activeContext.country || "");
@@ -47,30 +53,52 @@ export default function PlanSettingsPage() {
       setTeacherName(activeContext.teacherName || "");
       setSchoolName(activeContext.schoolName || "");
       setSectionName(activeContext.sectionName || "");
-      setPlanningDate(activeContext.planningDate || "2026-10-11");
+      setPlanningDate(activeContext.planningDate || new Date().toISOString().split("T")[0]);
       setDefaultPeriodMinutes(activeContext.defaultPeriodMinutes || 45);
       setDefaultPeriodsCount(activeContext.defaultPeriodsCount || 1);
       setSchoolDaysText((activeContext.schoolDays || []).join("، "));
       setHolidaysText((activeContext.holidays || []).join("، "));
+      setPlanningMode(
+        prefs.defaultPlanningMode === "weekly" || prefs.defaultPlanningMode === "five_day"
+          ? prefs.defaultPlanningMode
+          : "daily"
+      );
+      setObjectivesText(
+        typeof prefs.defaultObjectivesDraft === "string"
+          ? prefs.defaultObjectivesDraft
+          : "أن يشرح الطالب طريقة تفكيره في نشاط يحدّده المعلم.\nأن يقارن بين استراتيجيتين في مهمة يختارها المعلم."
+      );
+      setPlanningNote(typeof prefs.defaultPlanningNote === "string" ? prefs.defaultPlanningNote : "");
+      setPedagogicalAidEnabled(prefs.pedagogicalAidEnabled !== false);
     }
   }, [activeContext]);
 
   useEffect(() => {
+    let cancelled = false;
     async function loadTpls() {
-      if (!activeContextId) return;
+      if (!activeContextId) {
+        setTemplates([]);
+        return;
+      }
       try {
         const res = await apiFetch(`/api/templates?contextId=${encodeURIComponent(activeContextId)}`);
-        setTemplates(res.items || []);
-      } catch (e) {
-        console.error(e);
+        if (!cancelled) setTemplates(res.items || []);
+      } catch (e: any) {
+        if (!cancelled) setErrorMsg(e?.message || "تعذر تحميل قوالب المراحل.");
       }
     }
     loadTpls();
+    return () => {
+      cancelled = true;
+    };
   }, [activeContextId, apiFetch]);
 
-  const handleSaveSettings = async (e?: React.FormEvent) => {
+  const handleSaveSettings = async (e?: React.FormEvent): Promise<boolean> => {
     if (e) e.preventDefault();
-    if (!activeContext) return;
+    if (!activeContext) return false;
+    setErrorMsg("");
+    setFeedback("");
+    setSaving(true);
     try {
       const schoolDays = schoolDaysText
         .split(/[،,]/)
@@ -101,7 +129,13 @@ export default function PlanSettingsPage() {
           defaultPeriodMinutes: Number(defaultPeriodMinutes),
           defaultPeriodsCount: Number(defaultPeriodsCount),
           selectedTools: activeContext.selectedTools || [],
-          documentPreferences: activeContext.documentPreferences || {},
+          documentPreferences: {
+            ...(activeContext.documentPreferences || {}),
+            defaultPlanningMode: planningMode,
+            defaultObjectivesDraft: objectivesText,
+            defaultPlanningNote: planningNote,
+            pedagogicalAidEnabled,
+          },
           expectedVersion: activeContext.version,
         }),
       });
@@ -110,13 +144,18 @@ export default function PlanSettingsPage() {
       }
       await refreshContexts();
       setFeedback("تم حفظ السياق التعليمي (بجميع حقوله السبعة) وإعدادات المعلم. تُطبّق الإعدادات على الخطط الجديدة دون تغيير الإصدارات السابقة بصمت.");
+      return true;
     } catch (err: any) {
-      setFeedback(`خطأ: ${err.message}`);
+      setErrorMsg(err?.message || "تعذر حفظ إعدادات السياق والخطة.");
+      return false;
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleOpenEditor = async () => {
-    await handleSaveSettings();
+    const ok = await handleSaveSettings();
+    if (!ok) return;
     if (planningMode === "weekly") {
       router.push("/weekly-plan");
     } else if (planningMode === "five_day") {
@@ -125,6 +164,8 @@ export default function PlanSettingsPage() {
       router.push("/daily-plan");
     }
   };
+
+  const selectedToolsCount = activeContext?.selectedTools?.length ?? 0;
 
   return (
     <div>
@@ -145,18 +186,19 @@ export default function PlanSettingsPage() {
         </button>
       </div>
 
-      <WorkflowStepper activeStep={4} />
+      <WorkflowStepper activeStep={5} />
 
       {/* Segmented Mode Switcher matching `إعداد الخطة.png` */}
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "repeat(3, 1fr)",
+          gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
           backgroundColor: "#eef2ef",
           padding: "5px",
           borderRadius: "10px",
           marginBottom: "18px",
           border: "1px solid var(--border-color)",
+          gap: "4px",
         }}
       >
         {[
@@ -171,14 +213,14 @@ export default function PlanSettingsPage() {
               type="button"
               onClick={() => setPlanningMode(tab.id as any)}
               style={{
-                padding: "10px",
+                padding: "10px 6px",
                 borderRadius: "8px",
                 border: "none",
                 backgroundColor: active ? "#ffffff" : "transparent",
                 color: active ? "var(--primary-green)" : "var(--text-secondary)",
                 fontWeight: active ? 800 : 600,
                 cursor: "pointer",
-                fontSize: "0.9rem",
+                fontSize: "0.86rem",
               }}
             >
               {tab.label}
@@ -193,6 +235,12 @@ export default function PlanSettingsPage() {
         </div>
       )}
 
+      {errorMsg && (
+        <div className="blocker-banner">
+          <span>⛔ {errorMsg}</span>
+        </div>
+      )}
+
       {/* Main Split matching `إعداد الخطة.png`: Daily Session & Context Details (2/3) & Context Sidebar Cards (1/3) */}
       <div className="main-split-grid">
         <form className="card" onSubmit={handleSaveSettings}>
@@ -203,8 +251,8 @@ export default function PlanSettingsPage() {
             الحقول السبعة الصريحة: {"{subject, grade, country, curriculumName, language, year, edition}"} — الحقول غير المعروفة تُترك فارغة بدل تخمينها
           </p>
 
-          {/* Row 1: Teacher, Grade, Section matching `إعداد الخطة.png` */}
-          <div className="stats-grid-3">
+          {/* Row 1: Teacher, Grade, School, Section */}
+          <div className="stats-grid-4">
             <div className="form-group">
               <label className="form-label">اسم المعلم</label>
               <input
@@ -222,9 +270,19 @@ export default function PlanSettingsPage() {
               />
             </div>
             <div className="form-group">
-              <label className="form-label">الشعبة والمدرسة</label>
+              <label className="form-label">المدرسة</label>
               <input
                 className="form-input"
+                placeholder="اسم المدرسة (اختياري)"
+                value={schoolName}
+                onChange={(e) => setSchoolName(e.target.value)}
+              />
+            </div>
+            <div className="form-group">
+              <label className="form-label">الشعبة</label>
+              <input
+                className="form-input"
+                placeholder="مثال: الشعبة أ"
                 value={sectionName}
                 onChange={(e) => setSectionName(e.target.value)}
               />
@@ -350,19 +408,19 @@ export default function PlanSettingsPage() {
           </div>
 
           <div className="form-group">
-            <label className="form-label">الأهداف التعليمية · صياغة قابلة للتحرير</label>
+            <label className="form-label">الأهداف التعليمية الافتراضية للخطط الجديدة · صياغة قابلة للتحرير</label>
             <textarea
               className="form-textarea"
               value={objectivesText}
               onChange={(e) => setObjectivesText(e.target.value)}
             />
             <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "4px" }}>
-              راجع ارتباط الأهداف بمحتوى الدرس بعد توثيق المصدر.
+              تُحفظ ضمن تفضيلات السياق وتُملأ تلقائيًا عند بدء خطة يومية جديدة.
             </div>
           </div>
 
           <div className="form-group">
-            <label className="form-label">ملاحظة تخطيطية</label>
+            <label className="form-label">ملاحظة تخطيطية افتراضية</label>
             <textarea
               className="form-textarea"
               placeholder="أدخل احتياجات الصف والتعديلات المناسبة..."
@@ -380,6 +438,8 @@ export default function PlanSettingsPage() {
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
+              flexWrap: "wrap",
+              gap: "8px",
               marginBottom: "14px",
             }}
           >
@@ -392,8 +452,8 @@ export default function PlanSettingsPage() {
             <span className="badge badge-success">مفعّلة</span>
           </div>
 
-          <button type="submit" className="btn btn-secondary">
-            حفظ إعدادات السياق والخطة
+          <button type="submit" className="btn btn-secondary" disabled={saving || !activeContext}>
+            {saving ? "جارٍ الحفظ..." : "حفظ إعدادات السياق والخطة"}
           </button>
         </form>
 
@@ -403,8 +463,8 @@ export default function PlanSettingsPage() {
             <div style={{ fontWeight: 800, fontSize: "1rem", marginBottom: "8px" }}>
               {subject ? `خطة ${subject}` : "خطة درس جديد"}
             </div>
-            <span className="badge badge-warning" style={{ marginBottom: "10px" }}>
-              سياق محفوظ
+            <span className={`badge ${activeContext?.missingContextFields?.length ? "badge-warning" : "badge-success"}`} style={{ marginBottom: "10px" }}>
+              {activeContext?.missingContextFields?.length ? "سياق محفوظ (حقول اختيارية ناقصة)" : "سياق مكتمل"}
             </span>
             <p style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginBottom: "12px" }}>
               {curriculumName || "سياق المنهج المخصص"}
@@ -420,9 +480,9 @@ export default function PlanSettingsPage() {
                 fontSize: "0.82rem",
               }}
             >
-              <strong>{activeContext?.selectedTools?.length || 4} وسائل مختارة:</strong>
+              <strong>{selectedToolsCount} وسائل مختارة:</strong>
               <br />
-              {(activeContext?.selectedTools || []).join("، ")}
+              {(activeContext?.selectedTools || []).join("، ") || "لا توجد وسائل محددة بعد"}
             </div>
             <Link href="/tools" className="btn btn-secondary" style={{ width: "100%" }}>
               تعديل الوسائل
@@ -474,9 +534,11 @@ export default function PlanSettingsPage() {
         </div>
       </div>
 
-      <div style={{ display: "flex", gap: "10px" }}>
-        <button type="button" className="btn btn-primary" onClick={handleOpenEditor}>
-          ← فتح محرّر الخطة ({planningMode === "daily" ? "اليومية" : planningMode === "weekly" ? "الأسبوعية" : "خمسة أيام"})
+      <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+        <button type="button" className="btn btn-primary" onClick={handleOpenEditor} disabled={saving || !activeContext}>
+          {saving
+            ? "جارٍ الحفظ..."
+            : `← حفظ وفتح محرّر الخطة (${planningMode === "daily" ? "اليومية" : planningMode === "weekly" ? "الأسبوعية" : "خمسة أيام"})`}
         </button>
         <Link href="/tools" className="btn btn-secondary">
           العودة إلى الوسائل
@@ -485,4 +547,3 @@ export default function PlanSettingsPage() {
     </div>
   );
 }
-

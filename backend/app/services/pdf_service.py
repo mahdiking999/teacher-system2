@@ -173,7 +173,7 @@ def inspect_and_extract_pdf(file_bytes: bytes, filename: str) -> Dict[str, Any]:
                     raise ValueError(
                         f"عدد صفحات الملف ({page_count}) يتجاوز الحد الأقصى المسموح ({MAX_PDF_PAGES} صفحة)."
                     )
-                for idx in range(min(page_count, 100)):
+                for idx in range(min(page_count, MAX_PDF_PAGES)):
                     page_txt = doc[idx].get_text("text", flags=fitz.TEXT_PRESERVE_WHITESPACE) or ""
                     page_txt = unicodedata.normalize("NFKC", page_txt).replace("\ufffd", "")
                     fitz_page_texts.append(page_txt)
@@ -194,7 +194,7 @@ def inspect_and_extract_pdf(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     pages_result: List[Dict[str, Any]] = []
     has_meaningful_text = False
 
-    for pg_idx in range(1, min(page_count, 100) + 1):
+    for pg_idx in range(1, min(page_count, MAX_PDF_PAGES) + 1):
         fitz_txt = fitz_page_texts[pg_idx - 1] if pg_idx - 1 < len(fitz_page_texts) else ""
         stream_txt = extracted_stream_texts[pg_idx - 1] if pg_idx - 1 < len(extracted_stream_texts) else ""
         chosen_txt = fitz_txt if len(fitz_txt.strip()) >= 3 else stream_txt

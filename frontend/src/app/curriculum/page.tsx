@@ -1,47 +1,107 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
 import { useTeacherApp, WorkflowStepper } from "../../components/AppShell";
 
 export default function CurriculumPage() {
   const { activeContext, activeContextId, apiFetch } = useTeacherApp();
   const [sources, setSources] = useState<any[]>([]);
+  const [lessons, setLessons] = useState<any[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [newChapterTitle, setNewChapterTitle] = useState<string>("");
-  const [newChapterPage, setNewChapterPage] = useState<string>("");
+  const [newChapterPdfPage, setNewChapterPdfPage] = useState<string>("");
+  const [newChapterPrintedPage, setNewChapterPrintedPage] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(true);
+  const [savingChapter, setSavingChapter] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<string>("");
+  const [errorMsg, setErrorMsg] = useState<string>("");
 
-  const loadSources = async () => {
-    try {
-      const res = await apiFetch(`/api/sources?contextId=${encodeURIComponent(activeContextId)}`);
-      const items = res.items || [];
-      setSources(items);
-      if (items.length > 0 && !selectedSourceId) {
-        setSelectedSourceId(items[0].id);
+  const loadData = useCallback(
+    async (isCancelled?: () => boolean) => {
+      if (!activeContextId) {
+        setSources([]);
+        setLessons([]);
+        setSelectedSourceId("");
+        setLoading(false);
+        return;
       }
-    } catch (e) {
-      console.error(e);
-    }
-  };
+      setLoading(true);
+      setErrorMsg("");
+      try {
+        const [sRes, lRes] = await Promise.all([
+          apiFetch(`/api/sources?contextId=${encodeURIComponent(activeContextId)}`),
+          apiFetch(`/api/lessons?contextId=${encodeURIComponent(activeContextId)}`),
+        ]);
+        if (isCancelled && isCancelled()) return;
+        const items = sRes.items || [];
+        setSources(items);
+        setLessons(lRes.items || []);
+        setSelectedSourceId((prev) => (items.some((s: any) => s.id === prev) ? prev : items[0]?.id || ""));
+      } catch (e: any) {
+        if (!isCancelled || !isCancelled()) {
+          setErrorMsg(e?.message || "تعذر تحميل سجلات المنهج والفصول.");
+        }
+      } finally {
+        if (!isCancelled || !isCancelled()) {
+          setLoading(false);
+        }
+      }
+    },
+    [activeContextId, apiFetch]
+  );
 
   useEffect(() => {
-    if (activeContextId) loadSources();
-  }, [activeContextId]);
+    let cancelled = false;
+    setFeedback("");
+    setErrorMsg("");
+    setSearchQuery("");
+    setStatusFilter("all");
+    setNewChapterTitle("");
+    setNewChapterPdfPage("");
+    setNewChapterPrintedPage("");
+    loadData(() => cancelled);
+    return () => {
+      cancelled = true;
+    };
+  }, [loadData]);
 
   const filteredSources = sources.filter((s) => {
-    const matchesQ = !searchQuery.trim() || s.title.includes(searchQuery.trim());
+    const q = searchQuery.trim().toLowerCase();
+    const matchesQ =
+      !q ||
+      (s.title || "").toLowerCase().includes(q) ||
+      (s.fileName || "").toLowerCase().includes(q) ||
+      (s.reviewNotes || "").toLowerCase().includes(q);
     const matchesStatus = statusFilter === "all" || s.verificationStatus === statusFilter;
     return matchesQ && matchesStatus;
   });
 
-  const selectedSource = sources.find((s) => s.id === selectedSourceId) || filteredSources[0] || null;
+  const selectedSource =
+    filteredSources.find((s) => s.id === selectedSourceId) ||
+    filteredSources[0] ||
+    (filteredSources.length === 0 ? null : sources.find((s) => s.id === selectedSourceId) || null);
+
+  const sourceLessons = selectedSource ? lessons.filter((l) => l.sourceId === selectedSource.id) : [];
 
   const handleAddChapter = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedSource || !newChapterTitle.trim()) return;
+    setErrorMsg("");
+    setFeedback("");
+    if (!selectedSource) return;
+    if (!newChapterTitle.trim()) {
+      setErrorMsg("يرجى إدخال عنوان الفصل قبل الحفظ.");
+      return;
+    }
+    const parsedPdf = newChapterPdfPage.trim() ? Number.parseInt(newChapterPdfPage.trim(), 10) : null;
+    if (newChapterPdfPage.trim() && (Number.isNaN(parsedPdf) || (parsedPdf ?? 0) < 1)) {
+      setErrorMsg("رقم صفحة PDF يجب أن يكون عددًا صحيحًا موجبًا.");
+      return;
+    }
+
+    setSavingChapter(true);
     try {
       await apiFetch("/api/chapters", {
         method: "POST",
@@ -50,17 +110,20 @@ export default function CurriculumPage() {
           sourceId: selectedSource.id,
           title: newChapterTitle.trim(),
           orderIndex: (selectedSource.chapters?.length || 0) + 1,
-          pdfStartPage: newChapterPage ? parseInt(newChapterPage, 10) : null,
-          printedStartPage: newChapterPage,
+          pdfStartPage: parsedPdf,
+          printedStartPage: newChapterPrintedPage.trim(),
           isDocumented: selectedSource.verificationStatus === "human_verified",
         }),
       });
       setNewChapterTitle("");
-      setNewChapterPage("");
+      setNewChapterPdfPage("");
+      setNewChapterPrintedPage("");
       setFeedback("تمت إضافة الفصل وربطه بسجل المصدر المحدّد.");
-      await loadSources();
+      await loadData();
     } catch (err: any) {
-      setFeedback(err.message);
+      setErrorMsg(err?.message || "تعذر إضافة الفصل.");
+    } finally {
+      setSavingChapter(false);
     }
   };
 
@@ -76,11 +139,11 @@ export default function CurriculumPage() {
 
       <div className="info-banner">
         <span>
-          ⓘ لا يتم استيراد أي فهرس رسمي وهمي من الذاكرة؛ الفصول والدروس المعروضة إما موثقة من ملف PDF المرفوع أو معلّمة بوضوح كمثال توضيحي.
+          ⓘ لا يتم استيراد أي فهرس رسمي وهمي من الذاكرة؛ الفصول والدروس المعروضة إما مستخرجة من ملف PDF المرفوع أو مضافة يدويًا ومعلّمة بوضوح.
         </span>
       </div>
 
-      <WorkflowStepper activeStep={1} />
+      <WorkflowStepper activeStep={2} />
 
       {/* Search & Status Filter matching `المنهج.png` */}
       <div className="main-split-grid" style={{ marginBottom: "12px" }}>
@@ -88,7 +151,7 @@ export default function CurriculumPage() {
           <label className="form-label">البحث داخل سياق ({activeContext?.subject} · {activeContext?.grade})</label>
           <input
             className="form-input"
-            placeholder="ابحث عن سجل منهج..."
+            placeholder="ابحث عن سجل منهج أو اسم ملف..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
           />
@@ -119,10 +182,20 @@ export default function CurriculumPage() {
         </div>
       )}
 
+      {errorMsg && (
+        <div className="blocker-banner">
+          <span>⛔ {errorMsg}</span>
+        </div>
+      )}
+
       {/* Main Split matching `المنهج.png`: Source Cards (Right/Main) & Selected Source Details (Left) */}
       <div className="main-split-grid">
         <div>
-          {sources.length === 0 ? (
+          {loading ? (
+            <div className="card" style={{ textAlign: "center", padding: "36px 16px", color: "var(--text-secondary)" }}>
+              جارٍ تحميل سجلات المنهج...
+            </div>
+          ) : sources.length === 0 ? (
             <div className="card" style={{ textAlign: "center", padding: "40px 16px" }}>
               <div style={{ fontSize: "2rem", marginBottom: "8px" }}>📖</div>
               <h2 style={{ fontSize: "1.2rem", fontWeight: 800, marginBottom: "8px" }}>
@@ -140,6 +213,22 @@ export default function CurriculumPage() {
                 </Link>
               </div>
             </div>
+          ) : filteredSources.length === 0 ? (
+            <div className="card" style={{ textAlign: "center", padding: "32px 16px" }}>
+              <p style={{ fontSize: "0.92rem", color: "var(--text-secondary)", marginBottom: "12px" }}>
+                لا توجد سجلات منهج تطابق البحث أو تصفية الحالة الحالية.
+              </p>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  setSearchQuery("");
+                  setStatusFilter("all");
+                }}
+              >
+                إعادة تعيين البحث والتصفية
+              </button>
+            </div>
           ) : (
             filteredSources.map((src) => {
               const isSelected = selectedSource?.id === src.id;
@@ -147,6 +236,14 @@ export default function CurriculumPage() {
                 <div
                   key={src.id}
                   onClick={() => setSelectedSourceId(src.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setSelectedSourceId(src.id);
+                    }
+                  }}
                   className="card"
                   style={{
                     borderColor: isSelected ? "var(--primary-green)" : "var(--border-color)",
@@ -159,7 +256,7 @@ export default function CurriculumPage() {
                     flexWrap: "wrap",
                   }}
                 >
-                  <div style={{ flex: 1, minWidth: "220px" }}>
+                  <div style={{ flex: "1 1 220px", minWidth: 0 }}>
                     <div style={{ display: "flex", gap: "8px", marginBottom: "10px", flexWrap: "wrap" }}>
                       <span
                         className={`badge ${
@@ -187,7 +284,8 @@ export default function CurriculumPage() {
                   {/* Book Cover Tile matching `المنهج.png` */}
                   <div
                     style={{
-                      width: "145px",
+                      flex: "0 1 145px",
+                      minWidth: "120px",
                       backgroundColor: "var(--sidebar-bg)",
                       color: "#fff",
                       borderRadius: "12px",
@@ -199,7 +297,7 @@ export default function CurriculumPage() {
                     }}
                   >
                     <div style={{ fontSize: "1.4rem" }}>📖</div>
-                    <div style={{ fontWeight: 800, fontSize: "1rem" }}>{src.title}</div>
+                    <div style={{ fontWeight: 800, fontSize: "1rem", overflowWrap: "anywhere" }}>{src.title}</div>
                     <div style={{ fontSize: "0.75rem", color: "var(--sidebar-muted)" }}>
                       {activeContext?.grade} · {src.verificationStatus === "human_verified" ? "موثّق" : "غير موثّق"}
                     </div>
@@ -227,68 +325,106 @@ export default function CurriculumPage() {
                 <div>
                   <div style={{ fontWeight: 700, fontSize: "0.9rem" }}>دروس وفصول قابلة للتخطيط</div>
                   <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>
-                    {selectedSource?.chapters?.length
-                      ? `${selectedSource.chapters.length} فصول مسجلة مرتبطة بأرقام الصفحات.`
+                    {selectedSource?.chapters?.length || sourceLessons.length
+                      ? `${selectedSource?.chapters?.length || 0} فصول و${sourceLessons.length} دروس مرتبطة بهذا المصدر.`
                       : "لا توجد فصول أو صفحات أو تمارين رسمية مختلقة في هذا النموذج."}
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Chapters List & Add Documented Chapter Form */}
+            {/* Chapters List & Extracted Lessons & Add Documented Chapter Form */}
             {selectedSource && (
               <div style={{ marginTop: "16px", paddingTop: "14px", borderTop: "1px solid var(--border-subtle)" }}>
                 <h4 style={{ fontSize: "0.92rem", fontWeight: 700, marginBottom: "8px" }}>
-                  الفصول المسجلة ضمن هذا المصدر ({selectedSource.chapters?.length || 0})
+                  الفصول والدروس المسجلة ضمن هذا المصدر ({selectedSource.chapters?.length || 0} فصول · {sourceLessons.length} دروس)
                 </h4>
                 {selectedSource.chapters && selectedSource.chapters.length > 0 ? (
-                  <ul style={{ listStyle: "none", display: "flex", flexDirection: "column", gap: "6px", marginBottom: "12px" }}>
-                    {selectedSource.chapters.map((ch: any) => (
-                      <li
-                        key={ch.id}
-                        style={{
-                          padding: "8px 12px",
-                          background: "#f9fbf9",
-                          borderRadius: "8px",
-                          border: "1px solid var(--border-subtle)",
-                          display: "flex",
-                          justifyContent: "space-between",
-                          fontSize: "0.84rem",
-                        }}
-                      >
-                        <span>
-                          <strong>الفصل {ch.orderIndex}:</strong> {ch.title}{" "}
-                          {ch.printedStartPage && `(ص ${ch.printedStartPage})`}
-                        </span>
-                        <span className={`badge ${ch.isDocumented ? "badge-success" : "badge-warning"}`}>
-                          {ch.provenanceLabel}
-                        </span>
-                      </li>
-                    ))}
+                  <ul style={{ listStyle: "none", display: "flex", flexDirection: "column", gap: "8px", marginBottom: "12px" }}>
+                    {selectedSource.chapters.map((ch: any) => {
+                      const chLessons = sourceLessons.filter((l) => l.chapterId === ch.id);
+                      return (
+                        <li
+                          key={ch.id}
+                          style={{
+                            padding: "10px 12px",
+                            background: "#f9fbf9",
+                            borderRadius: "8px",
+                            border: "1px solid var(--border-subtle)",
+                            fontSize: "0.84rem",
+                          }}
+                        >
+                          <div
+                            style={{
+                              display: "flex",
+                              justifyContent: "space-between",
+                              alignItems: "center",
+                              flexWrap: "wrap",
+                              gap: "8px",
+                            }}
+                          >
+                            <span>
+                              <strong>الفصل {ch.orderIndex}:</strong> {ch.title}{" "}
+                              {(ch.printedStartPage || ch.pdfStartPage) &&
+                                `(${ch.printedStartPage ? `ص مطبوعة: ${ch.printedStartPage}` : ""}${
+                                  ch.printedStartPage && ch.pdfStartPage ? " · " : ""
+                                }${ch.pdfStartPage ? `PDF: ${ch.pdfStartPage}` : ""})`}
+                            </span>
+                            <span className={`badge ${ch.isDocumented ? "badge-success" : "badge-warning"}`}>
+                              {ch.provenanceLabel}
+                            </span>
+                          </div>
+                          {chLessons.length > 0 && (
+                            <div style={{ marginTop: "8px", paddingTop: "6px", borderTop: "1px dashed var(--border-color)", display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                              {chLessons.map((les) => (
+                                <Link
+                                  key={les.id}
+                                  href={`/lessons?lessonId=${encodeURIComponent(les.id)}`}
+                                  className="badge badge-neutral"
+                                  style={{ textDecoration: "none", border: "1px solid var(--border-color)" }}
+                                >
+                                  📄 {les.title}
+                                  {les.printedPageNumber ? ` (ص ${les.printedPageNumber})` : ""}
+                                </Link>
+                              ))}
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
                   </ul>
                 ) : (
                   <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "10px" }}>
-                    لم يُسجّل أي فصل بعد. يمكنك إضافة فصل بعد مراجعة ملف المنهج المرفوع.
+                    لم يُسجّل أي فصل بعد. يمكنك استخراج الفصول تلقائيًا من «استيراد كتاب المنهج» أو إضافة فصل يدويًا أدناه.
                   </p>
                 )}
 
                 <form onSubmit={handleAddChapter} style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
                   <input
                     className="form-input"
-                    style={{ flex: 2, minWidth: "180px" }}
+                    style={{ flex: "2 1 180px" }}
                     placeholder="عنوان الفصل (حسب الكتاب أو كمثال معلّم)..."
                     value={newChapterTitle}
                     onChange={(e) => setNewChapterTitle(e.target.value)}
                   />
                   <input
+                    type="number"
+                    min={1}
                     className="form-input"
-                    style={{ flex: 1, minWidth: "100px" }}
-                    placeholder="رقم الصفحة"
-                    value={newChapterPage}
-                    onChange={(e) => setNewChapterPage(e.target.value)}
+                    style={{ flex: "1 1 100px" }}
+                    placeholder="صفحة PDF"
+                    value={newChapterPdfPage}
+                    onChange={(e) => setNewChapterPdfPage(e.target.value)}
                   />
-                  <button type="submit" className="btn btn-secondary">
-                    + تسجيل فصل
+                  <input
+                    className="form-input"
+                    style={{ flex: "1 1 110px" }}
+                    placeholder="الصفحة المطبوعة"
+                    value={newChapterPrintedPage}
+                    onChange={(e) => setNewChapterPrintedPage(e.target.value)}
+                  />
+                  <button type="submit" className="btn btn-secondary" disabled={savingChapter}>
+                    {savingChapter ? "جارٍ التسجيل..." : "+ تسجيل فصل"}
                   </button>
                 </form>
               </div>
@@ -313,7 +449,7 @@ export default function CurriculumPage() {
           </span>
 
           <div style={{ fontSize: "1.15rem", fontWeight: 800, marginBottom: "14px" }}>
-            {selectedSource?.title || "سجل منهج تجريبي"}
+            {selectedSource?.title || "لا يوجد سجل محدّد"}
           </div>
 
           <div className="form-group">
@@ -361,6 +497,8 @@ export default function CurriculumPage() {
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
+              flexWrap: "wrap",
+              gap: "8px",
               paddingTop: "10px",
               borderTop: "1px solid var(--border-subtle)",
             }}
@@ -373,7 +511,11 @@ export default function CurriculumPage() {
                   : "بانتظار بيانات المصدر ومراجعة مسؤول المنهج"}
               </div>
             </div>
-            <span className="badge badge-warning">
+            <span
+              className={`badge ${
+                selectedSource?.verificationStatus === "human_verified" ? "badge-success" : "badge-warning"
+              }`}
+            >
               {selectedSource?.verificationStatus === "human_verified" ? "معتمد" : "معلّق"}
             </span>
           </div>
@@ -389,7 +531,7 @@ export default function CurriculumPage() {
       </div>
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
-        <div style={{ display: "flex", gap: "10px" }}>
+        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
           <Link href="/lessons" className="btn btn-primary">
             ← متابعة إلى اختيار الدرس
           </Link>
@@ -404,4 +546,3 @@ export default function CurriculumPage() {
     </div>
   );
 }
-
