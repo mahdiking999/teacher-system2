@@ -66,7 +66,9 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
     - science_experiment: validates hypothesis, variables, safety precautions, units, and step-by-step observation protocol.
     - worksheet_generator: generates structured editable worksheet items tailored to the subject without forcing math equations on non-math subjects.
     """
-    provenance = "مثال توضيحي غير موثق من الكتاب"
+    is_doc_src = bool(inputs.get("isDocumentedSource", False))
+    src_ref = str(inputs.get("sourceRef") or "").strip()
+    provenance = f"مرتبط بالمصدر الموثق ({src_ref})" if (is_doc_src and src_ref) else ("مرتبط بالمصدر المعتمد" if is_doc_src else "مثال توضيحي غير موثق من الكتاب")
 
     if tool_type == "math_solver":
         expression = str(inputs.get("expression") or "").strip()
@@ -100,7 +102,7 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
             try:
                 claimed_str = _normalize_digits(str(claimed_answer).strip())
                 claimed_float = safe_eval_math_expression(claimed_str) if "/" in claimed_str else float(claimed_str)
-                if not math.isclose(computed, claimed_float, rel_tol=1e-6, abs_tol=1e-6):
+                if claimed_str != formatted_val and not math.isclose(computed, claimed_float, rel_tol=1e-4, abs_tol=1e-4):
                     answer_matches = False
                     mismatch_note = f"الحل المدخل ({claimed_answer}) لا يطابق النتيجة الصحيحة ({formatted_val})."
             except (ValueError, ZeroDivisionError):

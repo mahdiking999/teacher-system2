@@ -111,7 +111,7 @@ def _post_chat_completion(
             {"role": "user", "content": user_content},
         ],
         "temperature": 0.3,
-        "max_tokens": 2200,
+        "max_tokens": 4096,
     }
     headers = {
         "Content-Type": "application/json",
@@ -206,6 +206,7 @@ def generate_slides_with_ai(
             "lessonTitle": title,
             "objectives": objectives,
             "phases": [{"phaseName": p.get("phaseName"), "teacherActivity": p.get("teacherActivity"), "materials": p.get("materials")} for p in phases],
+            "subjectItems": plan_dict.get("subjectItems") or [],
             "formativeAssessment": assessment,
             "sourceExcerpt": source_excerpt[:2500],
             "customInstructions": custom_instructions,
@@ -512,6 +513,32 @@ def ocr_pdf_page_with_ai(
     }
 
 
+def _select_structural_pages(pages_text: List[Dict[str, Any]], max_pages: int = 24) -> List[Dict[str, Any]]:
+    """Prioritize Table of Contents (المحتويات/الفهرس anywhere in the book, including end-of-book Iraqi TOCs)
+    and Chapter Opener pages (الفصل + multiple الدرس entries) before falling back to leading pages."""
+    structural: List[Dict[str, Any]] = []
+    seen_nums = set()
+    toc_keywords = ("المحتويات", "الـمحتويــات", "الفهرس", "Content", "Contents", "فهرس")
+    for p in pages_text:
+        txt = str(p.get("text") or "")
+        pnum = p.get("pdfPageNumber")
+        is_toc = any(k in txt for k in toc_keywords)
+        is_chapter_opener = ("الفصل" in txt or "الوحدة" in txt) and txt.count("الدرس") >= 2
+        if is_toc or is_chapter_opener:
+            structural.append(p)
+            seen_nums.add(pnum)
+    if len(structural) >= 3:
+        return structural[:max_pages]
+    for p in pages_text[:max_pages]:
+        pnum = p.get("pdfPageNumber")
+        if pnum not in seen_nums:
+            structural.append(p)
+            seen_nums.add(pnum)
+        if len(structural) >= max_pages:
+            break
+    return structural
+
+
 def extract_chapters_and_lessons_with_ai(
     pages_text: List[Dict[str, Any]],
     context_snap: Dict[str, Any],
@@ -519,21 +546,22 @@ def extract_chapters_and_lessons_with_ai(
 ) -> Dict[str, Any]:
     subject = context_snap.get("subject") or "المادة"
     grade = context_snap.get("grade") or ""
+    selected_pages = _select_structural_pages(pages_text, max_pages=24)
     combined_pages = "\n\n".join(
-        f"--- PDF Page {p.get('pdfPageNumber')} (Printed {p.get('printedPageNumber')}) ---\n{str(p.get('text') or '')[:900]}"
-        for p in pages_text[:20]
+        f"--- PDF Page {p.get('pdfPageNumber')} (Printed {p.get('printedPageNumber')}) ---\n{str(p.get('text') or '')[:1400]}"
+        for p in selected_pages
     )
 
     system_prompt = (
-        "أنت محلل مناهج تعليمية. استخرج بنية الفصول والدروس الموجودة فعليًا في صفحات الكتاب فقط دون اختلاق دروس غير موجودة. "
-        "أعد JSON فقط بالصيغة: "
+        "أنت محلل مناهج تعليمية. استخرج بنية جميع الفصول والدروس الموجودة فعليًا في صفحات الفهرس/المحتويات ومقدمات الفصول فقط دون اختلاق دروس غير موجودة. "
+        "انتبه لأرقام الصفحات المذكورة أمام كل فصل ودرس في الفهرس. أعد JSON فقط بالصيغة: "
         "{\"chapters\": [{\"title\": \"...\", \"pdfStartPage\": 1, \"printedStartPage\": \"1\", "
         "\"lessons\": [{\"title\": \"...\", \"pdfPageNumber\": 1, \"printedPageNumber\": \"1\", "
         "\"objectives\": [\"...\"], \"priorKnowledge\": \"...\", \"evaluationCriteria\": \"...\"}]}]}."
     )
     user_prompt = f"الكتاب: {source_title} | المادة: {subject} | الصف: {grade}\n\nالنصوص المستخرجة:\n{combined_pages}"
 
-    parsed, model_used = call_llm_json(system_prompt, user_prompt, timeout_sec=24.0)
+    parsed, model_used = call_llm_json(system_prompt, user_prompt, timeout_sec=35.0)
     chapters = (parsed or {}).get("chapters") if isinstance(parsed, dict) else None
     if isinstance(chapters, list) and len(chapters) > 0:
         return {"chapters": chapters, "modelUsed": model_used}

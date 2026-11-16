@@ -739,6 +739,14 @@ def update_source_metadata(
                 )
             src.verification_status = "human_verified"
             src.reviewed_at = utcnow()
+            ctx_parent = db.query(EducationalContext).filter(EducationalContext.id == payload.contextId).first()
+            if ctx_parent:
+                if not ctx_parent.academic_year and src.book_year:
+                    ctx_parent.academic_year = src.book_year
+                if not ctx_parent.book_edition and src.edition:
+                    ctx_parent.book_edition = src.edition
+                if not ctx_parent.curriculum_name and src.title:
+                    ctx_parent.curriculum_name = src.title
         else:
             src.verification_status = payload.verificationStatus
 
@@ -2060,14 +2068,36 @@ def post_system_restore(payload: dict):
 def _get_source_excerpt_for_plan(db: Session, pln: Plan) -> str:
     if not pln.source_id:
         return ""
-    pages = (
-        db.query(SourcePage)
-        .filter(SourcePage.source_id == pln.source_id)
-        .order_by(SourcePage.pdf_page_number.asc())
-        .limit(3)
-        .all()
+    start_page: Optional[int] = None
+    lesson_prefix = ""
+    for lid in (pln.primary_lesson_id, pln.secondary_lesson_id):
+        if lid:
+            les = db.query(Lesson).filter(Lesson.id == lid, Lesson.context_id == pln.context_id).first()
+            if les:
+                if les.questions_and_solutions or les.activities:
+                    lesson_prefix = f"[بيانات الدرس الموثقة: {les.title}]\nالأنشطة: {json.dumps(les.activities or [], ensure_ascii=False)}\nالأمثلة والحلول: {json.dumps(les.questions_and_solutions or [], ensure_ascii=False)}\n\n"
+                if les.pdf_page_number and les.pdf_page_number >= 1:
+                    start_page = les.pdf_page_number
+                    break
+    q = db.query(SourcePage).filter(SourcePage.source_id == pln.source_id)
+    if start_page is not None:
+        pages = (
+            q.filter(SourcePage.pdf_page_number >= start_page, SourcePage.pdf_page_number <= start_page + 3)
+            .order_by(SourcePage.pdf_page_number.asc())
+            .all()
+        )
+        if pages:
+            return lesson_prefix + "\n\n".join(
+                f"[صفحة {p.pdf_page_number}]\n{(p.corrected_text or p.extracted_text or '').strip()}"
+                for p in pages
+                if (p.corrected_text or p.extracted_text or "").strip()
+            )
+    pages = q.order_by(SourcePage.pdf_page_number.asc()).limit(4).all()
+    return lesson_prefix + "\n\n".join(
+        (p.corrected_text or p.extracted_text or "").strip()
+        for p in pages
+        if (p.corrected_text or p.extracted_text or "").strip()
     )
-    return "\n".join((p.corrected_text or p.extracted_text or "").strip() for p in pages if (p.corrected_text or p.extracted_text or "").strip())
 
 
 @app.get("/api/ai/status")
@@ -2289,14 +2319,42 @@ def ai_extract_source_structure(
             les_title = str(les_item.get("title") or f"درس {l_idx}").strip()
             if les_title in existing_lessons:
                 continue
+            raw_l_page = _safe_int(les_item.get("pdfPageNumber"), ch.pdf_start_page or 1)
+            if raw_l_page <= (ch.pdf_start_page or 1) and len(pages_payload) > (ch.pdf_start_page or 1):
+                code_pat_1 = f"[{ch.order_index}-{l_idx}]"
+                code_pat_2 = f"]{ch.order_index}-{l_idx}["
+                code_pat_3 = f"{ch.order_index}-{l_idx}"
+                matched_page = None
+                for cand_p in pages_payload:
+                    pno = cand_p["pdfPageNumber"]
+                    if pno <= (ch.pdf_start_page or 1):
+                        continue
+                    ptxt = cand_p["text"]
+                    has_lesson_box = ("فكرة" in ptxt or "المفردات" in ptxt or "املفردات" in ptxt)
+                    if has_lesson_box and (code_pat_1 in ptxt or code_pat_2 in ptxt or code_pat_3 in ptxt):
+                        matched_page = pno
+                        break
+                if matched_page is None:
+                    title_words = [w for w in re.split(r"\s+", re.sub(r"[^\w\s\u0600-\u06FF]", " ", les_title)) if len(w) >= 4]
+                    for cand_p in pages_payload:
+                        pno = cand_p["pdfPageNumber"]
+                        if pno <= (ch.pdf_start_page or 1):
+                            continue
+                        ptxt = cand_p["text"]
+                        has_lesson_box = ("فكرة" in ptxt or "المفردات" in ptxt or "املفردات" in ptxt)
+                        if has_lesson_box and len(title_words) >= 2 and sum(1 for w in title_words if w in ptxt) >= max(2, len(title_words) - 1):
+                            matched_page = pno
+                            break
+                if matched_page is not None:
+                    raw_l_page = matched_page
             les = Lesson(
                 context_id=payload.contextId,
                 source_id=src.id,
                 chapter_id=ch.id,
                 title=les_title,
-                code_or_order=str(l_idx),
-                pdf_page_number=_safe_int(les_item.get("pdfPageNumber"), ch.pdf_start_page or 1),
-                printed_page_number=str(les_item.get("printedPageNumber") or ch.printed_start_page or "1"),
+                code_or_order=f"{ch.order_index}-{l_idx}",
+                pdf_page_number=raw_l_page,
+                printed_page_number=str(raw_l_page),
                 content_origin=origin,
                 provenance_label=prov,
                 objectives=[str(o) for o in (les_item.get("objectives") or []) if str(o).strip()],
