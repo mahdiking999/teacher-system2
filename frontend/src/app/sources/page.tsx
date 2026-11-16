@@ -9,6 +9,7 @@ export default function SourcesImportPage() {
   const [sources, setSources] = useState<any[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
   const [uploading, setUploading] = useState<boolean>(false);
+  const [aiProcessing, setAiProcessing] = useState<string>("");
   const [feedback, setFeedback] = useState<string>("");
   const [errorMsg, setErrorMsg] = useState<string>("");
 
@@ -23,7 +24,7 @@ export default function SourcesImportPage() {
   const [correctedPageText, setCorrectedPageText] = useState<string>("");
   const [printedPageNumber, setPrintedPageNumber] = useState<string>("1");
 
-  const loadSources = async (keepId?: string) => {
+  const loadSources = async (keepId?: string, keepPageIdx?: number) => {
     try {
       const res = await apiFetch(`/api/sources?contextId=${encodeURIComponent(activeContextId)}`);
       const list = res.items || [];
@@ -31,7 +32,7 @@ export default function SourcesImportPage() {
       const targetId = keepId || selectedSourceId || (list[0] && list[0].id) || "";
       const found = list.find((s: any) => s.id === targetId) || (list.length > 0 ? list[0] : null);
       if (found) {
-        bindSource(found);
+        bindSource(found, keepPageIdx);
       } else {
         setSelectedSourceId("");
         setTitle(activeContext?.curriculumName || "كتاب المنهج");
@@ -41,7 +42,7 @@ export default function SourcesImportPage() {
     }
   };
 
-  const bindSource = (src: any) => {
+  const bindSource = (src: any, keepPageIdx?: number) => {
     setSelectedSourceId(src.id);
     setTitle(src.title || "سجل منهج");
     setBookYear(src.bookYear || "");
@@ -49,10 +50,15 @@ export default function SourcesImportPage() {
     setSourceUrl(src.sourceUrl || "");
     setReviewerName(src.reviewerName || "");
     setReviewNotes(src.reviewNotes || "");
-    setSelectedPageIdx(0);
+    const pageIdx =
+      typeof keepPageIdx === "number" && src.pages && keepPageIdx >= 0 && keepPageIdx < src.pages.length
+        ? keepPageIdx
+        : 0;
+    setSelectedPageIdx(pageIdx);
     if (src.pages && src.pages.length > 0) {
-      setCorrectedPageText(src.pages[0].correctedText || src.pages[0].extractedText || "");
-      setPrintedPageNumber(src.pages[0].printedPageNumber || "1");
+      const pg = src.pages[pageIdx];
+      setCorrectedPageText(pg.correctedText || pg.extractedText || "");
+      setPrintedPageNumber(pg.printedPageNumber || String(pg.pdfPageNumber || 1));
     }
   };
 
@@ -144,9 +150,55 @@ export default function SourcesImportPage() {
         }),
       });
       setFeedback(`تم حفظ تصحيح النص ورقم الصفحة المطبوعة (${printedPageNumber}) لصفحة PDF رقم ${currentPage.pdfPageNumber}.`);
-      await loadSources(currentSource.id);
+      await loadSources(currentSource.id, selectedPageIdx);
     } catch (err: any) {
       setErrorMsg(err.message);
+    }
+  };
+
+  const handleAiPageOcr = async () => {
+    if (!currentSource || !currentPage) return;
+    setAiProcessing("ocr");
+    setErrorMsg("");
+    setFeedback("");
+    try {
+      const res = await apiFetch(`/api/sources/${currentSource.id}/pages/${currentPage.id}/ai-ocr`, {
+        method: "POST",
+        body: JSON.stringify({ contextId: activeContextId }),
+      });
+      if (res?.page) {
+        setCorrectedPageText(res.page.correctedText || res.page.extractedText || "");
+        setPrintedPageNumber(res.page.printedPageNumber ?? "");
+      }
+      await loadSources(currentSource.id, selectedPageIdx);
+      setFeedback(
+        `تم استخراج النص بالرؤية الذكية لصفحة PDF رقم ${currentPage.pdfPageNumber} عبر (${res?.modelUsed || "NVIDIA NIM Vision"}). راجع النص قبل الاعتماد.`
+      );
+    } catch (err: any) {
+      setErrorMsg(err.message);
+    } finally {
+      setAiProcessing("");
+    }
+  };
+
+  const handleAiExtractStructure = async () => {
+    if (!currentSource) return;
+    setAiProcessing("extract");
+    setErrorMsg("");
+    setFeedback("");
+    try {
+      const res = await apiFetch(`/api/sources/${currentSource.id}/ai-extract-structure`, {
+        method: "POST",
+        body: JSON.stringify({ contextId: activeContextId }),
+      });
+      await loadSources(currentSource.id, selectedPageIdx);
+      setFeedback(
+        `تم استخراج الفصول والدروس تلقائيًا عبر (${res?.modelUsed || "NVIDIA NIM"}): أُنشئ ${res?.chaptersCreated ?? 0} فصلًا و${res?.lessonsCreated ?? 0} درسًا.`
+      );
+    } catch (err: any) {
+      setErrorMsg(err.message);
+    } finally {
+      setAiProcessing("");
     }
   };
 
@@ -509,9 +561,36 @@ export default function SourcesImportPage() {
             />
           </div>
 
-          <button type="button" className="btn btn-primary" onClick={handleSavePageCorrection}>
-            حفظ النص المصحح ورقم الصفحة المطبوعة
-          </button>
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={Boolean(aiProcessing)}
+              onClick={handleSavePageCorrection}
+            >
+              حفظ النص المصحح ورقم الصفحة المطبوعة
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={Boolean(aiProcessing) || !currentSource || !currentPage}
+              onClick={handleAiPageOcr}
+            >
+              {aiProcessing === "ocr"
+                ? "جارٍ استخراج النص بالرؤية الذكية..."
+                : "✨ استخراج النص بالرؤية الذكية (Vision OCR)"}
+            </button>
+            <button
+              type="button"
+              className="btn btn-secondary"
+              disabled={Boolean(aiProcessing) || !currentSource}
+              onClick={handleAiExtractStructure}
+            >
+              {aiProcessing === "extract"
+                ? "جارٍ استخراج الفصول والدروس..."
+                : "📚 استخراج الفصول والدروس تلقائيًا بالذكاء الاصطناعي"}
+            </button>
+          </div>
         </div>
       )}
 

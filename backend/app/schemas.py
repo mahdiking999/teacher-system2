@@ -163,3 +163,19 @@ class ExportCreateRequest(BaseModel):
     dateTo: Optional[str] = None
     planTypeFilter: Optional[str] = None
 
+
+class AISlideGenerateRequest(BaseModel):
+    contextId: str
+    slidesCount: int = Field(default=6, ge=3, le=12)
+    customInstructions: str = ""
+
+
+class AIPlanGenerateRequest(BaseModel):
+    contextId: str
+    lessonTitle: str = ""
+    customInstructions: str = ""
+
+
+class AISourceExtractRequest(BaseModel):
+    contextId: str
+

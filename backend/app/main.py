@@ -54,9 +54,19 @@ from .schemas import (
     PlanCopyCrossContextRequest,
     SubjectToolRequest,
     ExportCreateRequest,
+    AISlideGenerateRequest,
+    AIPlanGenerateRequest,
+    AISourceExtractRequest,
 )
 from .services.audit_service import audit_plan_and_context, run_subject_tool
-from .services.pdf_service import inspect_and_extract_pdf
+from .services.pdf_service import inspect_and_extract_pdf, render_pdf_page_to_png_bytes
+from .services.ai_service import (
+    get_ai_status,
+    generate_slides_with_ai,
+    generate_daily_plan_with_ai,
+    ocr_pdf_page_with_ai,
+    extract_chapters_and_lessons_with_ai,
+)
 from .services.export_service import (
     generate_plan_docx_bytes,
     generate_plan_pptx_bytes,
@@ -1947,6 +1957,247 @@ def post_system_restore(payload: dict):
             detail={"code": "INVALID_BACKUP_PAYLOAD", "message": "ملف النسخة الاحتياطية غير صالح."},
         )
     return restore_database_backup_dict(payload)
+
+
+# ==============================================================================
+# AI GENERATION & REAL VISION OCR ENDPOINTS (OmniRoute / NVIDIA NIM)
+# ==============================================================================
+
+def _get_source_excerpt_for_plan(db: Session, pln: Plan) -> str:
+    if not pln.source_id:
+        return ""
+    pages = (
+        db.query(SourcePage)
+        .filter(SourcePage.source_id == pln.source_id)
+        .order_by(SourcePage.pdf_page_number.asc())
+        .limit(3)
+        .all()
+    )
+    return "\n".join((p.corrected_text or p.extracted_text or "").strip() for p in pages if (p.corrected_text or p.extracted_text or "").strip())
+
+
+@app.get("/api/ai/status")
+def ai_status_endpoint():
+    return get_ai_status()
+
+
+@app.post("/api/plans/{plan_id}/ai-generate-slides")
+def ai_generate_slides_for_plan(
+    plan_id: str,
+    payload: AISlideGenerateRequest,
+    x_active_context_id: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    verify_active_context_guard(payload.contextId, x_active_context_id)
+    pln = db.query(Plan).filter(Plan.id == plan_id, Plan.context_id == payload.contextId).first()
+    if not pln:
+        raise HTTPException(status_code=404, detail={"code": "PLAN_NOT_FOUND", "message": "الخطة غير موجودة ضمن هذا السياق."})
+    ctx = db.query(EducationalContext).filter(EducationalContext.id == payload.contextId).first()
+    context_snap = ctx.snapshot_dict() if ctx else dict(pln.context_snapshot or {})
+    source_excerpt = _get_source_excerpt_for_plan(db, pln)
+
+    res = generate_slides_with_ai(
+        plan_dict=serialize_plan(pln),
+        context_snap=context_snap,
+        source_excerpt=source_excerpt,
+        slides_count=payload.slidesCount,
+        custom_instructions=payload.customInstructions,
+    )
+    pln.slides = res["slides"]
+    settings = dict(pln.presentation_settings or {})
+    settings["slidesCount"] = res["slidesCount"]
+    settings["title"] = settings.get("title") or pln.title
+    pln.presentation_settings = settings
+    pln.version += 1
+    pln.updated_at = utcnow()
+    _save_plan_version_and_review(db, pln, ctx)
+    db.commit()
+    db.refresh(pln)
+
+    return {
+        "plan": serialize_plan(pln),
+        "modelUsed": res["modelUsed"],
+        "slidesCount": res["slidesCount"],
+    }
+
+
+@app.post("/api/plans/{plan_id}/ai-generate-plan")
+def ai_generate_daily_plan(
+    plan_id: str,
+    payload: AIPlanGenerateRequest,
+    x_active_context_id: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    verify_active_context_guard(payload.contextId, x_active_context_id)
+    pln = db.query(Plan).filter(Plan.id == plan_id, Plan.context_id == payload.contextId).first()
+    if not pln:
+        raise HTTPException(status_code=404, detail={"code": "PLAN_NOT_FOUND", "message": "الخطة غير موجودة ضمن هذا السياق."})
+    ctx = db.query(EducationalContext).filter(EducationalContext.id == payload.contextId).first()
+    context_snap = ctx.snapshot_dict() if ctx else dict(pln.context_snapshot or {})
+    source_excerpt = _get_source_excerpt_for_plan(db, pln)
+
+    res = generate_daily_plan_with_ai(
+        plan_dict=serialize_plan(pln),
+        context_snap=context_snap,
+        lesson_title=payload.lessonTitle,
+        source_excerpt=source_excerpt,
+        custom_instructions=payload.customInstructions,
+    )
+    pln.title = res["title"]
+    pln.objectives = res["objectives"]
+    pln.prior_knowledge = res["priorKnowledge"]
+    pln.teacher_role = res["teacherRole"]
+    pln.student_role = res["studentRole"]
+    pln.phases = res["phases"]
+    pln.formative_assessment = res["formativeAssessment"]
+    pln.differentiation = res["differentiation"]
+    pln.homework = res["homework"]
+    pln.slides = res["slides"]
+    pln.version += 1
+    pln.status = "draft"
+    pln.updated_at = utcnow()
+    rev = _save_plan_version_and_review(db, pln, ctx)
+    db.commit()
+    db.refresh(pln)
+
+    return {
+        "plan": serialize_plan(pln),
+        "modelUsed": res["modelUsed"],
+        "audit": {
+            "overallStatus": rev.overall_status,
+            "blockersCount": rev.blockers_count,
+            "warningsCount": rev.warnings_count,
+            "passedCount": rev.passed_count,
+        },
+    }
+
+
+@app.post("/api/sources/{source_id}/pages/{page_id}/ai-ocr")
+def ai_ocr_source_page(
+    source_id: str,
+    page_id: str,
+    payload: AISourceExtractRequest,
+    x_active_context_id: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    verify_active_context_guard(payload.contextId, x_active_context_id)
+    src = db.query(CurriculumSource).filter(CurriculumSource.id == source_id, CurriculumSource.context_id == payload.contextId).first()
+    if not src:
+        raise HTTPException(status_code=404, detail={"code": "SOURCE_NOT_FOUND", "message": "المصدر غير موجود ضمن هذا السياق."})
+    pg = db.query(SourcePage).filter(SourcePage.id == page_id, SourcePage.source_id == src.id).first()
+    if not pg:
+        raise HTTPException(status_code=404, detail={"code": "PAGE_NOT_FOUND", "message": "الصفحة غير موجودة."})
+
+    ctx = db.query(EducationalContext).filter(EducationalContext.id == payload.contextId).first()
+    context_snap = ctx.snapshot_dict() if ctx else {}
+
+    img_bytes = None
+    if src.file_path and os.path.isfile(src.file_path):
+        with open(src.file_path, "rb") as f_pdf:
+            img_bytes = render_pdf_page_to_png_bytes(f_pdf.read(), pg.pdf_page_number)
+
+    res = ocr_pdf_page_with_ai(
+        image_png_bytes=img_bytes,
+        fallback_text=pg.corrected_text or pg.extracted_text or "",
+        page_number=pg.pdf_page_number,
+        context_snap=context_snap,
+    )
+    pg.extracted_text = res["extractedText"]
+    pg.corrected_text = res["extractedText"]
+    pg.printed_page_number = res["printedPageNumber"]
+    pg.needs_ocr_review = True
+    pg.updated_at = utcnow()
+    if src.extraction_status == "requires_ocr_or_manual" and len(res["extractedText"].strip()) >= 3:
+        src.extraction_status = "extracted_text"
+    db.commit()
+    db.refresh(pg)
+
+    return {
+        "page": {
+            "id": pg.id,
+            "pdfPageNumber": pg.pdf_page_number,
+            "printedPageNumber": pg.printed_page_number,
+            "extractedText": pg.extracted_text,
+            "correctedText": pg.corrected_text,
+            "needsOcrReview": pg.needs_ocr_review,
+            "humanReviewed": pg.human_reviewed,
+        },
+        "notes": res["notes"],
+        "modelUsed": res["modelUsed"],
+    }
+
+
+@app.post("/api/sources/{source_id}/ai-extract-structure")
+def ai_extract_source_structure(
+    source_id: str,
+    payload: AISourceExtractRequest,
+    x_active_context_id: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    verify_active_context_guard(payload.contextId, x_active_context_id)
+    src = db.query(CurriculumSource).filter(CurriculumSource.id == source_id, CurriculumSource.context_id == payload.contextId).first()
+    if not src:
+        raise HTTPException(status_code=404, detail={"code": "SOURCE_NOT_FOUND", "message": "المصدر غير موجود ضمن هذا السياق."})
+    ctx = db.query(EducationalContext).filter(EducationalContext.id == payload.contextId).first()
+    context_snap = ctx.snapshot_dict() if ctx else {}
+
+    pages_payload = [
+        {
+            "pdfPageNumber": p.pdf_page_number,
+            "printedPageNumber": p.printed_page_number,
+            "text": p.corrected_text or p.extracted_text or "",
+        }
+        for p in sorted(src.pages, key=lambda x: x.pdf_page_number)
+    ]
+    res = extract_chapters_and_lessons_with_ai(pages_payload, context_snap, src.title)
+
+    is_doc = src.verification_status == "human_verified"
+    prov = "محتوى مرتبط بالمصدر المعتمد" if is_doc else "مثال توضيحي غير موثق من الكتاب"
+    origin = "documented_source" if is_doc else "authored_example"
+    chapters_created = 0
+    lessons_created = 0
+
+    existing_ch_count = db.query(Chapter).filter(Chapter.source_id == src.id).count()
+    for idx, ch_item in enumerate(res.get("chapters") or [], start=1):
+        ch = Chapter(
+            context_id=payload.contextId,
+            source_id=src.id,
+            title=str(ch_item.get("title") or f"فصل {existing_ch_count + idx}").strip(),
+            order_index=existing_ch_count + idx,
+            pdf_start_page=int(ch_item.get("pdfStartPage") or 1),
+            printed_start_page=str(ch_item.get("printedStartPage") or "1"),
+            is_documented=is_doc,
+            provenance_label=prov,
+        )
+        db.add(ch)
+        db.flush()
+        chapters_created += 1
+
+        for l_idx, les_item in enumerate(ch_item.get("lessons") or [], start=1):
+            les = Lesson(
+                context_id=payload.contextId,
+                source_id=src.id,
+                chapter_id=ch.id,
+                title=str(les_item.get("title") or f"درس {l_idx}").strip(),
+                code_or_order=str(l_idx),
+                pdf_page_number=int(les_item.get("pdfPageNumber") or ch.pdf_start_page or 1),
+                printed_page_number=str(les_item.get("printedPageNumber") or ch.printed_start_page or "1"),
+                content_origin=origin,
+                provenance_label=prov,
+                objectives=[str(o) for o in (les_item.get("objectives") or []) if str(o).strip()],
+                prior_knowledge=str(les_item.get("priorKnowledge") or "").strip(),
+                evaluation_criteria=str(les_item.get("evaluationCriteria") or "").strip(),
+                review_status="draft",
+            )
+            db.add(les)
+            lessons_created += 1
+
+    db.commit()
+    return {
+        "chaptersCreated": chapters_created,
+        "lessonsCreated": lessons_created,
+        "modelUsed": res["modelUsed"],
+    }
 
 
 if __name__ == "__main__":

@@ -1,7 +1,13 @@
 import hashlib
 import re
+import unicodedata
 import zlib
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
+
+try:
+    import pymupdf as fitz  # PyMuPDF
+except ImportError:
+    fitz = None
 
 
 MAX_PDF_SIZE_BYTES = 25 * 1024 * 1024  # 25 MB limit
@@ -79,7 +85,6 @@ def _extract_text_from_pdf_stream(stream_data: bytes) -> str:
     # Match literal strings (...) and hex strings <...> inside BT ... ET blocks or stream
     for match in re.finditer(rb"\(([^()\\]*(?:\\.[^()\\]*)*)\)", stream_data):
         raw = match.group(1)
-        # Unescape standard PDF escapes
         raw = raw.replace(b"\\(", b"(").replace(b"\\)", b")").replace(b"\\n", b"\n").replace(b"\\r", b"\r")
         txt = _decode_pdf_literal_string(raw).strip()
         if txt:
@@ -99,11 +104,38 @@ def _extract_text_from_pdf_stream(stream_data: bytes) -> str:
     return " ".join(chunks)
 
 
+def _detect_printed_page_number(page_text: str, fallback_num: int) -> str:
+    lines = [ln.strip() for ln in page_text.splitlines() if ln.strip()]
+    if lines:
+        for candidate in (lines[-1], lines[0]):
+            if re.fullmatch(r"\d{1,4}", candidate):
+                return candidate
+    return str(fallback_num)
+
+
+def render_pdf_page_to_png_bytes(file_bytes: bytes, pdf_page_number: int, dpi: int = 150) -> Optional[bytes]:
+    """
+    Renders a single PDF page (1-indexed) to PNG bytes via PyMuPDF for Vision OCR.
+    Returns None if PyMuPDF is unavailable or rendering fails.
+    """
+    if fitz is None or not file_bytes or pdf_page_number < 1:
+        return None
+    try:
+        with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+            if pdf_page_number > len(doc):
+                return None
+            page = doc[pdf_page_number - 1]
+            pix = page.get_pixmap(dpi=dpi)
+            return pix.tobytes("png")
+    except Exception:
+        return None
+
+
 def inspect_and_extract_pdf(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     """
     Validates actual PDF magic signature (%PDF-), size limits, and page count.
-    Extracts text per page if textual streams exist, or marks `requires_ocr_or_manual`
-    without ever inventing fake chapters or claiming successful extraction from filename alone.
+    Extracts real Arabic & bilingual text per page via PyMuPDF (`fitz`) with stream-regex fallback,
+    or marks `requires_ocr_or_manual` for scanned pages without fabricating chapters.
     """
     if not file_bytes or len(file_bytes) < 8:
         raise ValueError("الملف المرفوع فارغ أو تالف.")
@@ -111,28 +143,13 @@ def inspect_and_extract_pdf(file_bytes: bytes, filename: str) -> Dict[str, Any]:
     if len(file_bytes) > MAX_PDF_SIZE_BYTES:
         raise ValueError(f"حجم الملف يتجاوز الحد المسموح به ({MAX_PDF_SIZE_BYTES // (1024 * 1024)} ميجابايت).")
 
-    # Check actual PDF magic bytes at start of file (do not trust file extension!)
     header_window = file_bytes[:1024]
     if b"%PDF-" not in header_window[:16]:
         raise ValueError("توقيع الملف غير صالح: الملف المرفوع ليس ملف PDF حقيقيًا (%PDF- مفقود).")
 
     sha256_hash = hashlib.sha256(file_bytes).hexdigest()
 
-    # Count `/Type /Page` (excluding `/Type /Pages`)
-    page_matches = re.findall(rb"/Type\s*/Page\b(?!s)", file_bytes)
-    page_count = len(page_matches)
-    if page_count == 0:
-        # Fallback check for /Count
-        count_matches = re.findall(rb"/Count\s+(\d+)", file_bytes)
-        if count_matches:
-            page_count = max(int(c) for c in count_matches)
-        else:
-            page_count = 1
-
-    if page_count > MAX_PDF_PAGES:
-        raise ValueError(f"عدد صفحات الملف ({page_count}) يتجاوز الحد الأقصى المسموح ({MAX_PDF_PAGES} صفحة).")
-
-    # Extract streams
+    # Extract raw fallback streams so synthetic PDFs work too
     extracted_stream_texts: List[str] = []
     for stream_match in re.finditer(rb"stream\r?\n(.*?)\r?\nendstream", file_bytes, re.DOTALL):
         raw_stream = stream_match.group(1)
@@ -145,26 +162,58 @@ def inspect_and_extract_pdf(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         if txt.strip():
             extracted_stream_texts.append(txt.strip())
 
+    fitz_page_texts: List[str] = []
+    page_count = 0
+
+    if fitz is not None:
+        try:
+            with fitz.open(stream=file_bytes, filetype="pdf") as doc:
+                page_count = len(doc)
+                if page_count > MAX_PDF_PAGES:
+                    raise ValueError(
+                        f"عدد صفحات الملف ({page_count}) يتجاوز الحد الأقصى المسموح ({MAX_PDF_PAGES} صفحة)."
+                    )
+                for idx in range(min(page_count, 100)):
+                    page_txt = doc[idx].get_text("text", flags=fitz.TEXT_PRESERVE_WHITESPACE) or ""
+                    page_txt = unicodedata.normalize("NFKC", page_txt).replace("\ufffd", "")
+                    fitz_page_texts.append(page_txt)
+        except ValueError:
+            raise
+        except Exception:
+            fitz_page_texts = []
+
+    if page_count == 0:
+        page_matches = re.findall(rb"/Type\s*/Page\b(?!s)", file_bytes)
+        page_count = len(page_matches)
+        if page_count == 0:
+            count_matches = re.findall(rb"/Count\s+(\d+)", file_bytes)
+            page_count = max(int(c) for c in count_matches) if count_matches else 1
+        if page_count > MAX_PDF_PAGES:
+            raise ValueError(f"عدد صفحات الملف ({page_count}) يتجاوز الحد الأقصى المسموح ({MAX_PDF_PAGES} صفحة).")
+
     pages_result: List[Dict[str, Any]] = []
     has_meaningful_text = False
 
-    for pg_idx in range(1, min(page_count, 50) + 1):
+    for pg_idx in range(1, min(page_count, 100) + 1):
+        fitz_txt = fitz_page_texts[pg_idx - 1] if pg_idx - 1 < len(fitz_page_texts) else ""
         stream_txt = extracted_stream_texts[pg_idx - 1] if pg_idx - 1 < len(extracted_stream_texts) else ""
-        # Clean non-printable characters
-        stream_txt = "".join(ch for ch in stream_txt if ch.isprintable() or ch in "\n\r\t")
-        if len(stream_txt.strip()) >= 3:
+        chosen_txt = fitz_txt if len(fitz_txt.strip()) >= 3 else stream_txt
+        chosen_txt = "".join(ch for ch in chosen_txt if ch.isprintable() or ch in "\n\r\t").strip()
+
+        if len(chosen_txt) >= 3:
             has_meaningful_text = True
             needs_ocr = False
         else:
             needs_ocr = True
 
-        ambiguities = detect_ocr_ambiguities(stream_txt)
+        printed_num = _detect_printed_page_number(chosen_txt, pg_idx) if chosen_txt else str(pg_idx)
+        ambiguities = detect_ocr_ambiguities(chosen_txt)
         pages_result.append(
             {
                 "pdfPageNumber": pg_idx,
-                "printedPageNumber": str(pg_idx),
-                "extractedText": stream_txt if stream_txt.strip() else "",
-                "correctedText": stream_txt if stream_txt.strip() else "",
+                "printedPageNumber": printed_num,
+                "extractedText": chosen_txt,
+                "correctedText": chosen_txt,
                 "needsOcrReview": needs_ocr or len(ambiguities) > 0,
                 "ocrAmbiguities": ambiguities,
                 "humanReviewed": False,
@@ -180,4 +229,3 @@ def inspect_and_extract_pdf(file_bytes: bytes, filename: str) -> Dict[str, Any]:
         "extractionStatus": extraction_status,
         "pages": pages_result,
     }
-

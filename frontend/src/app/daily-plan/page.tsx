@@ -35,6 +35,8 @@ export default function DailyPlanPage() {
   const [selectedPlanId, setSelectedPlanId] = useState<string>("");
   const [feedback, setFeedback] = useState<string>("");
   const [exportingFmt, setExportingFmt] = useState<string>("");
+  const [aiDrafting, setAiDrafting] = useState<boolean>(false);
+  const [aiPrompt, setAiPrompt] = useState<string>("");
 
   // Editable Plan Fields
   const [title, setTitle] = useState<string>("خطة درس يومي");
@@ -144,9 +146,9 @@ export default function DailyPlanPage() {
     }
   };
 
-  const handleSaveDraft = async () => {
+  const buildDraftPayload = () => {
     const currentPlan = plans.find((p) => p.id === selectedPlanId);
-    const payload = {
+    return {
       contextId: activeContextId,
       sourceId: currentPlan?.sourceId || null,
       primaryLessonId: primaryLessonId || null,
@@ -182,6 +184,10 @@ export default function DailyPlanPage() {
       contentOrigin: currentPlan?.contentOrigin || "authored_example",
       expectedVersion: planVersion,
     };
+  };
+
+  const handleSaveDraft = async () => {
+    const payload = buildDraftPayload();
 
     try {
       if (selectedPlanId) {
@@ -201,6 +207,42 @@ export default function DailyPlanPage() {
       }
     } catch (err: any) {
       setFeedback(`خطأ أثناء الحفظ: ${err.message}`);
+    }
+  };
+
+  const handleAiGeneratePlan = async () => {
+    setAiDrafting(true);
+    setFeedback("");
+    try {
+      let targetPlanId = selectedPlanId;
+      if (!targetPlanId) {
+        const created = await apiFetch("/api/plans", {
+          method: "POST",
+          body: JSON.stringify(buildDraftPayload()),
+        });
+        targetPlanId = created.id;
+      }
+      const res = await apiFetch(`/api/plans/${targetPlanId}/ai-generate-plan`, {
+        method: "POST",
+        body: JSON.stringify({
+          contextId: activeContextId,
+          lessonTitle: title,
+          customInstructions: aiPrompt,
+        }),
+      });
+      if (res?.plan) {
+        bindPlanToForm(res.plan);
+        await loadData(res.plan.id);
+      } else {
+        await loadData(targetPlanId);
+      }
+      setFeedback(
+        `تمت صياغة الخطة اليومية والأنشطة والتقويم بالذكاء الاصطناعي بنجاح عبر (${res?.modelUsed || "NVIDIA NIM"}). راجع الحقول وعدّلها قبل الاعتماد.`
+      );
+    } catch (err: any) {
+      setFeedback(`خطأ أثناء التوليد بالذكاء الاصطناعي: ${err.message}`);
+    } finally {
+      setAiDrafting(false);
     }
   };
 
@@ -303,6 +345,40 @@ export default function DailyPlanPage() {
               ))}
             </select>
           )}
+        </div>
+      </div>
+
+      {/* Compact AI Plan Drafting Bar */}
+      <div className="card" style={{ padding: "14px 18px", borderColor: "rgba(23, 107, 82, 0.28)", backgroundColor: "#fcfefd" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "8px" }}>
+          <strong style={{ fontSize: "0.95rem", fontWeight: 800 }}>
+            ✨ صياغة الخطة والأنشطة بالذكاء الاصطناعي (NVIDIA NIM)
+          </strong>
+          <span style={{ fontSize: "0.76rem", color: "var(--text-secondary)" }}>
+            يملأ الأهداف والتمهيد ومراحل سير الحصة والتقويم والواجب تلقائيًا
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+          <input
+            type="text"
+            aria-label="تعليمات إضافية لصياغة الخطة بالذكاء الاصطناعي"
+            className="form-input"
+            style={{ flex: "1 1 280px" }}
+            placeholder="تعليمات إضافية لصياغة الخطة (اختياري): ركّز على العمل التعاوني أو أمثلة حياتية..."
+            value={aiPrompt}
+            onChange={(e) => setAiPrompt(e.target.value)}
+            disabled={aiDrafting}
+          />
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={aiDrafting || !activeContextId}
+            onClick={handleAiGeneratePlan}
+          >
+            {aiDrafting
+              ? "جارٍ صياغة الخطة عبر NVIDIA NIM..."
+              : "✨ صياغة الخطة والأنشطة بالذكاء الاصطناعي (NVIDIA NIM)"}
+          </button>
         </div>
       </div>
 

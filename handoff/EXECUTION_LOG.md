@@ -3,8 +3,9 @@
 - **Repository:** `https://github.com/mahdiking999/teacher-system2` (`main` branch)
 - **Target Platform:** Render Free Tier (`plan: free`, unified Docker Web Service + Free PostgreSQL)
 - **Database Mode:** Render Free PostgreSQL (`teacher-system2-db`) in production; SQLite (WAL mode) locally, with `ENABLE_DEMO_SEED=1`
-- **Updated At:** 2026-11-16T23:36:00+03:00
-- **Current Owner:** Ready for **Kilo Code** pickup & **Render Blueprint sync**
+- **Updated At:** 2026-11-17T00:13:00+03:00
+- **Live URL:** `https://teachersys.onrender.com` (PostgreSQL `teacher-system2-db`)
+- **Current Owner:** Ready for **Kilo Code** pickup & **Batch 6 (User Auth + Render AI env wiring)**
 
 ---
 
@@ -16,10 +17,10 @@
 | **Step 2** | Update `backend/app/database.py` (`DATA_DIR`, `postgres://`/`postgresql://` normalization, SQLite WAL + busy_timeout) | `DONE` | `normalize_database_url()` verified for both schemes |
 | **Step 3** | Enhance `backend/app/services/migration_and_backup.py` (`export_database_backup_dict` & `restore_database_backup_dict`) | `DONE` | Upsert restore & backwards-compatible JSON schema |
 | **Step 4** | Update `backend/app/main.py` (`STORAGE_ROOT`, auto-seed, `PILOT_ACCESS_PIN`, `/api/system/backup` & `/restore`, self-healing exports) | `DONE` | `_build_export_bytes()` regenerates missing export files from DB |
-| **Step 5** | Update `frontend/next.config.mjs` (`output: "standalone"`) & slim `requirements.txt` (12 pkgs) | `DONE` | Added `@types/node` to `frontend/package.json` so Docker builds stay clean |
-| **Step 6** | Create `Dockerfile`, `scripts/start_prod.sh`, `render.yaml` (with `teacher-system2-db` PostgreSQL), `.dockerignore` & update `docs/DEPLOYMENT.md` | `DONE` | Free PostgreSQL (`plan: free`) linked via `DATABASE_URL` |
-| **Step 7** | Add tests & run `pytest backend/tests/ -v` + `npm run build` + prod simulation | `DONE` | **19/19 pytest passed**, **15/15 Next.js routes built**, self-healing exports & proxy verified (`handoff/verification_test_output.log`) |
-| **Step 8** | Commit & push to `origin/main` (keeping `.kilo/` untracked) | `DONE` | Synced with `mahdiking999/teacher-system2` (`main`) |
+| **Step 5** | Update `frontend/next.config.mjs` (`output: "standalone"`) & slim `requirements.txt` | `DONE` | Added `@types/node` to `frontend/package.json` |
+| **Step 6** | Create `Dockerfile`, `scripts/start_prod.sh`, `render.yaml` (with `teacher-system2-db` PostgreSQL & service name `teachersys`), `.dockerignore` & update `docs/DEPLOYMENT.md` | `DONE` | Live at `https://teachersys.onrender.com` (`databaseDialect: postgresql`) |
+| **Step 7 (Batch 5)** | Add real Arabic `PyMuPDF` PDF extraction + PNG rendering, `ai_service.py` (OmniRoute / NVIDIA NIM), AI endpoints & UI buttons (`/presentations`, `/sources`, `/daily-plan`), update partner docs | `DONE` | **21/21 pytest passed**, live OmniRoute slide + Vision OCR verified, **15/15 Next.js routes built** (`handoff/verification_test_output.log`) |
+| **Step 8** | Commit & push all Batch 5 changes to `origin/main` | `DONE` | Synced with `mahdiking999/teacher-system2` (`main`) |
 
 ---
 

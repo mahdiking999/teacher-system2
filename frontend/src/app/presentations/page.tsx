@@ -15,6 +15,9 @@ export default function PresentationsPage() {
   const [layoutStyle, setLayoutStyle] = useState<string>("title_and_content");
   const [exporting, setExporting] = useState<boolean>(false);
   const [feedback, setFeedback] = useState<string>("");
+  const [aiGenerating, setAiGenerating] = useState<boolean>(false);
+  const [aiSlidesCount, setAiSlidesCount] = useState<number>(6);
+  const [aiCustomPrompt, setAiCustomPrompt] = useState<string>("");
 
   const loadPlans = async (keepId?: string) => {
     try {
@@ -111,6 +114,35 @@ export default function PresentationsPage() {
     }
   };
 
+  const handleAiGenerateSlides = async () => {
+    if (!currentPlan) return;
+    setAiGenerating(true);
+    setFeedback("");
+    try {
+      const res = await apiFetch(`/api/plans/${currentPlan.id}/ai-generate-slides`, {
+        method: "POST",
+        body: JSON.stringify({
+          contextId: activeContextId,
+          slidesCount: aiSlidesCount,
+          customInstructions: aiCustomPrompt,
+        }),
+      });
+      if (res?.plan?.slides) {
+        setSlides(res.plan.slides);
+      }
+      await loadPlans(currentPlan.id);
+      const count = res?.slidesCount ?? res?.plan?.slides?.length ?? aiSlidesCount;
+      const model = res?.modelUsed || "NVIDIA NIM";
+      setFeedback(
+        `تم توليد ${count} شرائح ذكية بنجاح عبر (${model}). يمكنك تعديلها أو تصدير PPTX فورًا.`
+      );
+    } catch (err: any) {
+      setFeedback(err.message);
+    } finally {
+      setAiGenerating(false);
+    }
+  };
+
   const moveSlide = (idx: number, dir: -1 | 1) => {
     const target = idx + dir;
     if (target < 0 || target >= slides.length) return;
@@ -187,6 +219,55 @@ export default function PresentationsPage() {
                 </option>
               ))}
             </select>
+          </div>
+
+          <div className="card" style={{ borderColor: "rgba(23, 107, 82, 0.28)", backgroundColor: "#fcfefd" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "10px" }}>
+              <div>
+                <h3 style={{ fontSize: "1.05rem", fontWeight: 800 }}>✨ توليد الشرائح الذكي عبر OmniRoute / NVIDIA NIM</h3>
+                <p style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+                  ينشئ شرائح عرض تعليمية متكاملة انطلاقًا من أهداف الخطة ومراحلها مع قابلية التحرير الفوري قبل التصدير.
+                </p>
+              </div>
+              <span className="badge badge-neutral">{currentPlan?.title || "الخطة المحددة"}</span>
+            </div>
+
+            <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
+              <select
+                aria-label="عدد الشرائح المطلوب توليدها"
+                className="form-select"
+                style={{ width: "auto", minWidth: "130px" }}
+                value={aiSlidesCount}
+                onChange={(e) => setAiSlidesCount(Number(e.target.value))}
+                disabled={aiGenerating}
+              >
+                <option value={5}>5 شرائح</option>
+                <option value={6}>6 شرائح</option>
+                <option value={7}>7 شرائح</option>
+                <option value={8}>8 شرائح</option>
+                <option value={10}>10 شرائح</option>
+              </select>
+
+              <input
+                type="text"
+                aria-label="ملاحظات إضافية للشرائح"
+                className="form-input"
+                style={{ flex: "1 1 260px" }}
+                placeholder="ملاحظات إضافية للشرائح (اختياري): ركّز على الأمثلة الحياتية..."
+                value={aiCustomPrompt}
+                onChange={(e) => setAiCustomPrompt(e.target.value)}
+                disabled={aiGenerating}
+              />
+
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={aiGenerating || !currentPlan}
+                onClick={handleAiGenerateSlides}
+              >
+                {aiGenerating ? "جارٍ توليد الشرائح عبر NVIDIA NIM..." : "✨ توليد شرائح الدرس بالذكاء الاصطناعي"}
+              </button>
+            </div>
           </div>
 
           {feedback && (

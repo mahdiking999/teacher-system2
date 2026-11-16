@@ -37,3 +37,11 @@ flowchart LR
 - **`frontend/next.config.mjs` & `frontend/package.json`**: Enabled `output: "standalone"` and added `@types/node`.
 - **`Dockerfile`, `scripts/start_prod.sh`, `.dockerignore`, `docs/DEPLOYMENT.md`**: Multi-stage unified build and deployment instructions.
 - **`backend/tests/test_migrations_and_backup.py`**: Added tests for backup/restore roundtrip, `PILOT_ACCESS_PIN`, `normalize_database_url`, and self-healing export downloads after disk reset.
+
+### Batch 5 Additions (Real Arabic PDF + OmniRoute / NVIDIA NIM AI)
+- **`requirements.txt` & `Dockerfile`**: Added `pymupdf>=1.25.0,<2.0`.
+- **`backend/app/services/pdf_service.py`**: Real Arabic/bilingual PDF extraction via PyMuPDF + `NFKC` normalization + `render_pdf_page_to_png_bytes()`.
+- **`backend/app/services/ai_service.py`**: Fast NVIDIA NIM / OmniRoute client (`nv-nemotron-3-5-bolt-e4b` for slides/plans/structure, `nv-nemotron-3-5-super-vl-120b` & `nv-nemotron-3-nano-omni-30b` for Vision OCR) with `OMNIROUTE_BASE_URL` and `NVIDIA_API_KEYS` support plus deterministic offline fallback.
+- **`backend/app/main.py` & `schemas.py`**: Added `/api/ai/status`, `/api/plans/{id}/ai-generate-slides`, `/api/plans/{id}/ai-generate-plan`, `/api/sources/{id}/pages/{page_id}/ai-ocr`, and `/api/sources/{id}/ai-extract-structure`.
+- **Frontend**: Updated `presentations/page.tsx`, `sources/page.tsx`, and `daily-plan/page.tsx`.
+- **Tests**: Added `backend/tests/test_ai_and_pdf.py` (21/21 pytest total passing).

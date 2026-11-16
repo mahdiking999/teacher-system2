@@ -17,7 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends nodejs ca-certi
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir fastapi uvicorn SQLAlchemy alembic pydantic pydantic-settings python-multipart python-dotenv psycopg2-binary httpx
+    pip install --no-cache-dir fastapi uvicorn SQLAlchemy alembic pydantic pydantic-settings python-multipart python-dotenv psycopg2-binary httpx "pymupdf>=1.25.0,<2.0"
 
 COPY backend/ ./backend/
 COPY scripts/start_prod.sh ./scripts/start_prod.sh
