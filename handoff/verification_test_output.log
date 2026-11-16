@@ -127,3 +127,58 @@ EXPORT_BUNDLE_ZIP: teacher_bundle_zip_v1_20261116_231530.zip bytes: 17124 checkP
 PROXY_HEALTH: 200 {"status":"ok","service":"teacher-system-fastapi","databaseConnected":true,"databaseDialect":"sqlite","timestamp":"2026-11-16T20:16:09.678683+00:00"}
 PROXY_CONTEXTS: 200 2 ['ctx_math_iq_demo', 'ctx_arabic_lit_demo']
 
+
+=== 5. POST-POSTGRES UPGRADE PYTEST SUITE (19 TESTS) ================================ test session starts =============================
+platform win32 -- Python 3.12.2, pytest-9.1.1, pluggy-1.7.0 -- E:\AISHIT\Antigravity_and_Freebuff\MohCollabs\Teacher-Sys\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: E:\AISHIT\Antigravity_and_Freebuff\MohCollabs\Teacher-Sys
+plugins: anyio-4.16.0, asyncio-1.4.0
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 19 items
+
+backend/tests/test_api.py::test_health_and_seed_contexts PASSED          [  5%]
+backend/tests/test_api.py::test_create_new_context_any_subject_and_country PASSED [ 10%]
+backend/tests/test_api.py::test_context_isolation_and_stale_write_rejection PASSED [ 15%]
+backend/tests/test_api.py::test_subject_tools_and_math_zero_division_guard PASSED [ 21%]
+backend/tests/test_api.py::test_plan_audit_approval_and_revocation_on_edit PASSED [ 26%]
+backend/tests/test_api.py::test_pdf_upload_signature_validation_and_real_exports PASSED [ 31%]
+backend/tests/test_audit_and_math.py::test_math_safe_eval_and_zero_division PASSED [ 36%]
+backend/tests/test_audit_and_math.py::test_audit_time_contradiction_and_two_periods PASSED [ 42%]
+backend/tests/test_audit_and_math.py::test_history_and_science_tools PASSED [ 47%]
+backend/tests/test_isolated_journey.py::test_clean_start_zero_counters_and_no_demo PASSED [ 52%]
+backend/tests/test_isolated_journey.py::test_onboarding_name_persistence_and_settings_update PASSED [ 57%]
+backend/tests/test_isolated_journey.py::test_complete_teacher_journey_and_file_inspection PASSED [ 63%]
+backend/tests/test_isolated_journey.py::test_cors_lan_regex PASSED       [ 68%]
+backend/tests/test_migrations_and_backup.py::test_postgresql_and_sqlite_ddl_compilation PASSED [ 73%]
+backend/tests/test_migrations_and_backup.py::test_backup_creation PASSED [ 78%]
+backend/tests/test_migrations_and_backup.py::test_backup_and_restore_roundtrip_api PASSED [ 84%]
+backend/tests/test_migrations_and_backup.py::test_pilot_access_pin_middleware PASSED [ 89%]
+backend/tests/test_migrations_and_backup.py::test_database_url_normalization PASSED [ 94%]
+backend/tests/test_migrations_and_backup.py::test_export_download_self_healing_after_disk_reset PASSED [100%]
+
+============================== warnings summary ===============================
+backend\app\main.py:117
+  E:\AISHIT\Antigravity_and_Freebuff\MohCollabs\Teacher-Sys\backend\app\main.py:117: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("startup")
+
+.venv\Lib\site-packages\fastapi\applications.py:4744
+  E:\AISHIT\Antigravity_and_Freebuff\MohCollabs\Teacher-Sys\.venv\Lib\site-packages\fastapi\applications.py:4744: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    return self.router.on_event(event_type)  # ty: ignore[deprecated]
+
+.venv\Lib\site-packages\fastapi\testclient.py:1
+  E:\AISHIT\Antigravity_and_Freebuff\MohCollabs\Teacher-Sys\.venv\Lib\site-packages\fastapi\testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+======================= 19 passed, 3 warnings in 1.06s ========================
+

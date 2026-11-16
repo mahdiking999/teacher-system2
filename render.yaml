@@ -1,3 +1,9 @@
+databases:
+  - name: teacher-system2-db
+    databaseName: teacher_system
+    user: teacher_user
+    plan: free
+
 services:
   - type: web
     name: teacher-system2
@@ -6,6 +12,10 @@ services:
     autoDeploy: true
     healthCheckPath: /api/health
     envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: teacher-system2-db
+          property: connectionString
       - key: ENABLE_DEMO_SEED
         value: "1"
       - key: DATA_DIR

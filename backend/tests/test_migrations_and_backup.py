@@ -2,8 +2,8 @@ import os
 import tempfile
 from fastapi.testclient import TestClient
 from backend.app.main import app
-from backend.app.database import Base, engine, SessionLocal
-from backend.app.models import EducationalContext
+from backend.app.database import Base, engine, SessionLocal, normalize_database_url
+from backend.app.models import EducationalContext, ExportTask
 from backend.app.services.migration_and_backup import (
     generate_postgresql_and_sqlite_ddl,
     create_database_backup_json,
@@ -132,6 +132,84 @@ def test_pilot_access_pin_middleware(monkeypatch):
             db = SessionLocal()
             try:
                 db.query(EducationalContext).filter(EducationalContext.id == created_id).delete()
+                db.commit()
+            finally:
+                db.close()
+
+
+def test_database_url_normalization():
+    assert normalize_database_url("postgres://u:p@host:5432/db") == "postgresql+psycopg2://u:p@host:5432/db"
+    assert normalize_database_url("postgresql://u:p@host:5432/db") == "postgresql+psycopg2://u:p@host:5432/db"
+    assert normalize_database_url("sqlite:///./teacher_system.db") == "sqlite:///./teacher_system.db"
+
+
+def test_export_download_self_healing_after_disk_reset(monkeypatch):
+    monkeypatch.setenv("ENABLE_DEMO_SEED", "0")
+    monkeypatch.delenv("PILOT_ACCESS_PIN", raising=False)
+    Base.metadata.create_all(bind=engine)
+
+    created_ctx_id = None
+    export_file_path = None
+    try:
+        with TestClient(app) as client:
+            ctx_res = client.post(
+                "/api/contexts",
+                json={"subject": "الأحياء", "grade": "السادس العلمي", "teacherName": "أ. نور"},
+            )
+            assert ctx_res.status_code == 201
+            created_ctx_id = ctx_res.json()["id"]
+
+            plan_res = client.post(
+                "/api/plans",
+                headers={"X-Active-Context-Id": created_ctx_id},
+                json={
+                    "contextId": created_ctx_id,
+                    "title": "خطة التمثيل الضوئي",
+                    "planType": "daily",
+                    "periodsCount": 1,
+                    "periodMinutes": 45,
+                    "objectives": ["أن يفسر الطالب معادلة البناء الضوئي."],
+                    "formativeAssessment": "سؤال تقويمي ختامي",
+                },
+            )
+            assert plan_res.status_code == 201
+            plan_id = plan_res.json()["id"]
+
+            exp_res = client.post(
+                "/api/exports",
+                headers={"X-Active-Context-Id": created_ctx_id},
+                json={"contextId": created_ctx_id, "planId": plan_id, "exportFormat": "docx"},
+            )
+            assert exp_res.status_code == 201
+            exp_id = exp_res.json()["id"]
+            dl_url = exp_res.json()["downloadUrl"]
+
+            db = SessionLocal()
+            try:
+                task = db.query(ExportTask).filter(ExportTask.id == exp_id).first()
+                assert task is not None
+                export_file_path = task.file_path
+                assert os.path.isfile(export_file_path)
+                os.remove(export_file_path)
+                assert not os.path.isfile(export_file_path)
+            finally:
+                db.close()
+
+            dl_res = client.get(dl_url)
+            assert dl_res.status_code == 200
+            assert len(dl_res.content) > 500
+            assert dl_res.content[:2] == b"PK"  # Valid OOXML ZIP header
+            assert os.path.isfile(export_file_path)
+    finally:
+        if export_file_path and os.path.isfile(export_file_path):
+            try:
+                os.remove(export_file_path)
+            except OSError:
+                pass
+        if created_ctx_id:
+            db = SessionLocal()
+            try:
+                db.query(EducationalContext).filter(EducationalContext.id == created_ctx_id).delete()
                 db.commit()
             finally:
                 db.close()

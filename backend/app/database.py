@@ -2,13 +2,21 @@ import os
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, declarative_base
 
+
+def normalize_database_url(url: str) -> str:
+    """Normalize postgres:// and postgresql:// URLs to SQLAlchemy's psycopg2 driver."""
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+psycopg2://", 1)
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
+
+
 DATA_DIR = os.path.abspath(os.getenv("DATA_DIR", "."))
 os.makedirs(DATA_DIR, exist_ok=True)
 default_sqlite_path = os.path.join(DATA_DIR, "teacher_system.db").replace("\\", "/")
 
-DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{default_sqlite_path}")
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+psycopg2://", 1)
+DATABASE_URL = normalize_database_url(os.getenv("DATABASE_URL", f"sqlite:///{default_sqlite_path}"))
 
 connect_args = {}
 if DATABASE_URL.startswith("sqlite"):

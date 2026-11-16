@@ -61,15 +61,16 @@ npm run start
 
 ---
 
-## 5. النشر المجاني الموحّد على Render (Render Free Tier Blueprint)
+## 5. النشر المجاني الموحّد على Render مع PostgreSQL الدائمة (Render Free Tier Blueprint)
 
-لتفادي أخطاء مهلة التشغيل البارد (502 Cold-Start) بين خدمتين مجانيتين منفصلتين والبقاء ضمن سقف **512 MB RAM** في خطة Render المجانية:
-1. يجمع ملف [`Dockerfile`](../Dockerfile) كلًّا من **FastAPI (`127.0.0.1:8000`)** و**Next.js Standalone (`0.0.0.0:$PORT`)** في حاوية واحدة عبر [`scripts/start_prod.sh`](../scripts/start_prod.sh).
-2. يتم تفعيل وضع **SQLite WAL** مع `busy_timeout=5000` تلقائيًا في [`backend/app/database.py`](../backend/app/database.py) وتفعيل البيانات التجريبية التلقائية عند التشغيل الأول (`ENABLE_DEMO_SEED=1`).
-3. خطوات الإطلاق في 3 نقرات:
+لتفادي أخطاء مهلة التشغيل البارد (502 Cold-Start) بين خدمتين منفصلتين، ولضمان حفظ جميع البيانات بشكل دائم (وللترقية لاحقًا إلى حسابات المستخدمين وكلمات المرور) ضمن الخطة المجانية:
+1. يوفّر ملف [`render.yaml`](../render.yaml) قاعدة بيانات **Render PostgreSQL (`teacher-system2-db`, `plan: free`)** ويربطها تلقائيًا بمتغير `DATABASE_URL` في خدمة الويب (`teacher-system2`).
+2. يقوم [`backend/app/database.py`](../backend/app/database.py) بتطبيع روابط `postgres://` و`postgresql://` تلقائيًا إلى `postgresql+psycopg2://` مع دعم كامل لوضع **SQLite WAL** عند التشغيل المحلي.
+3. يجمع ملف [`Dockerfile`](../Dockerfile) كلًّا من **FastAPI (`127.0.0.1:8000`)** و**Next.js Standalone (`0.0.0.0:$PORT`)** في حاوية واحدة عبر [`scripts/start_prod.sh`](../scripts/start_prod.sh)، كما يُعيد مسار التنزيل `/api/exports/{id}/download` توليد ملفات `DOCX/PDF/PPTX/ZIP` تلقائيًا إذا أعادت الحاوية التشغيل بينما السجل محفوظ في PostgreSQL.
+4. خطوات الإطلاق:
    1. ادفع التحديثات إلى فرع `main` على GitHub.
-   2. افتح **Render Dashboard → Blueprints → New Blueprint Instance** واختر مستودع `mahdiking999/teacher-system2` (سيقرأ ملف [`render.yaml`](../render.yaml) تلقائيًا).
-   3. اضغط **Apply** — وبمجرد جاهزية الخدمة، افتح الرابط العام للمعلمين (يمكنك تعيين `PILOT_ACCESS_PIN` في متغيرات البيئة على Render لقفل التعديلات برمز تجريبي أو تركه فارغًا للإتاحة المفتوحة).
+   2. افتح **Render Dashboard → Blueprints** واختر مستودع `mahdiking999/teacher-system2` (أو اضغط **Manual sync** على الـ Blueprint الحالي).
+   3. اضغط **Apply** — وسيتم إنشاء قاعدة البيانات `teacher-system2-db` وتعبئتها تلقائيًا عند الإقلاع الأول (`ENABLE_DEMO_SEED=1`). يمكنك تعيين `PILOT_ACCESS_PIN` في متغيرات البيئة لقفل التعديلات برمز تجريبي أو تركه فارغًا للإتاحة المفتوحة.
 
 ---
 

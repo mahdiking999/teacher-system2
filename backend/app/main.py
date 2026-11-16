@@ -1648,38 +1648,43 @@ def list_exports(contextId: str = Query(...), db: Session = Depends(get_db)):
     }
 
 
-@app.post("/api/exports", status_code=201)
-def create_export_task(
-    payload: ExportCreateRequest,
-    x_active_context_id: Optional[str] = Header(default=None),
-    db: Session = Depends(get_db),
+def _build_export_bytes(
+    context_id: str,
+    plan_id: Optional[str],
+    plan_version: Optional[int],
+    export_format: str,
+    db: Session,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    plan_type_filter: Optional[str] = None,
+    context_snap_override: Optional[dict] = None,
+    source_status_override: Optional[str] = None,
 ):
-    verify_active_context_guard(payload.contextId, x_active_context_id)
-    ctx = db.query(EducationalContext).filter(EducationalContext.id == payload.contextId).first()
+    ctx = db.query(EducationalContext).filter(EducationalContext.id == context_id).first()
     if not ctx:
         raise HTTPException(status_code=404, detail={"code": "CONTEXT_NOT_FOUND", "message": "السياق غير موجود."})
 
-    sources = db.query(CurriculumSource).filter(CurriculumSource.context_id == payload.contextId).all()
-    source_status = (
+    sources = db.query(CurriculumSource).filter(CurriculumSource.context_id == context_id).all()
+    source_status = source_status_override or (
         "human_verified"
         if any(s.verification_status == "human_verified" for s in sources)
         else "unverified_draft"
     )
 
     plan_snap = {}
-    context_snap = ctx.snapshot_dict()
+    context_snap = dict(context_snap_override) if context_snap_override else ctx.snapshot_dict()
     review_snap = {"findings": []}
-    plan_ver_num = 1
-    plan_id = payload.planId
+    plan_ver_num = plan_version or 1
+    resolved_plan_id = plan_id
 
-    if plan_id:
-        pln = db.query(Plan).filter(Plan.id == plan_id, Plan.context_id == payload.contextId).first()
+    if resolved_plan_id:
+        pln = db.query(Plan).filter(Plan.id == resolved_plan_id, Plan.context_id == context_id).first()
         if not pln:
             raise HTTPException(
                 status_code=404,
                 detail={"code": "PLAN_NOT_FOUND_IN_CONTEXT", "message": "الخطة المطلوبة غير موجودة في هذا السياق."},
             )
-        target_ver = payload.planVersion or pln.version
+        target_ver = plan_version or pln.version
         pver = (
             db.query(PlanVersion)
             .filter(PlanVersion.plan_id == pln.id, PlanVersion.version_number == target_ver)
@@ -1693,7 +1698,8 @@ def create_export_task(
             plan_snap["approvedBy"] = pln.approved_by or (ctx.teacher_name if ctx else "")
             if not plan_snap.get("teacherName"):
                 plan_snap["teacherName"] = pln.teacher_name or (ctx.teacher_name if ctx else "")
-            context_snap = dict(pver.context_snapshot or ctx.snapshot_dict())
+            if not context_snap_override:
+                context_snap = dict(pver.context_snapshot or ctx.snapshot_dict())
             if not context_snap.get("teacherName"):
                 context_snap["teacherName"] = ctx.teacher_name if ctx else ""
             plan_ver_num = pver.version_number
@@ -1702,7 +1708,8 @@ def create_export_task(
             plan_snap["approvedBy"] = pln.approved_by or (ctx.teacher_name if ctx else "")
             if not plan_snap.get("teacherName"):
                 plan_snap["teacherName"] = pln.teacher_name or (ctx.teacher_name if ctx else "")
-            context_snap = dict(pln.context_snapshot or ctx.snapshot_dict())
+            if not context_snap_override:
+                context_snap = dict(pln.context_snapshot or ctx.snapshot_dict())
             if not context_snap.get("teacherName"):
                 context_snap["teacherName"] = ctx.teacher_name if ctx else ""
             plan_ver_num = pln.version
@@ -1716,16 +1723,13 @@ def create_export_task(
         if rev:
             review_snap = {"findings": rev.findings}
     else:
-        # Use most recent plan in context if none specified
-        first_pln = db.query(Plan).filter(Plan.context_id == payload.contextId).order_by(Plan.updated_at.desc()).first()
+        first_pln = db.query(Plan).filter(Plan.context_id == context_id).order_by(Plan.updated_at.desc()).first()
         if first_pln:
-            plan_id = first_pln.id
+            resolved_plan_id = first_pln.id
             plan_snap = serialize_plan(first_pln)
             plan_ver_num = first_pln.version
 
-    fmt = payload.exportFormat.lower().strip()
-    timestamp_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
-
+    fmt = export_format.lower().strip()
     if fmt == "docx":
         file_bytes = generate_plan_docx_bytes(plan_snap, context_snap, review_snap, source_status)
         ext = "docx"
@@ -1737,10 +1741,10 @@ def create_export_task(
         ext = "pdf"
     elif fmt == "report_pdf":
         rep_summary = get_reports_summary(
-            contextId=payload.contextId,
-            dateFrom=payload.dateFrom,
-            dateTo=payload.dateTo,
-            planType=payload.planTypeFilter,
+            contextId=context_id,
+            dateFrom=date_from,
+            dateTo=date_to,
+            planType=plan_type_filter,
             db=db,
         )
         file_bytes = generate_plan_pdf_bytes(
@@ -1749,10 +1753,10 @@ def create_export_task(
         ext = "pdf"
     elif fmt == "report_docx":
         rep_summary = get_reports_summary(
-            contextId=payload.contextId,
-            dateFrom=payload.dateFrom,
-            dateTo=payload.dateTo,
-            planType=payload.planTypeFilter,
+            contextId=context_id,
+            dateFrom=date_from,
+            dateTo=date_to,
+            planType=plan_type_filter,
             db=db,
         )
         rep_plan_snap = {
@@ -1777,7 +1781,7 @@ def create_export_task(
         docx_b = generate_plan_docx_bytes(plan_snap, context_snap, review_snap, source_status)
         pdf_b = generate_plan_pdf_bytes(plan_snap, context_snap, review_snap, source_status, is_report=False)
         pptx_b = generate_plan_pptx_bytes(plan_snap, context_snap, source_status)
-        rep_summary = get_reports_summary(contextId=payload.contextId, db=db)
+        rep_summary = get_reports_summary(contextId=context_id, db=db)
         rep_pdf_b = generate_plan_pdf_bytes(
             plan_snap, context_snap, review_snap, source_status, is_report=True, report_summary=rep_summary
         )
@@ -1804,6 +1808,28 @@ def create_export_task(
         ext = "zip"
     else:
         raise HTTPException(status_code=400, detail={"code": "UNSUPPORTED_EXPORT_FORMAT", "message": f"صيغة التصدير غير مدعومة: {fmt}"})
+
+    return file_bytes, ext, fmt, resolved_plan_id, plan_ver_num, plan_snap, context_snap, source_status
+
+
+@app.post("/api/exports", status_code=201)
+def create_export_task(
+    payload: ExportCreateRequest,
+    x_active_context_id: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    verify_active_context_guard(payload.contextId, x_active_context_id)
+    file_bytes, ext, fmt, plan_id, plan_ver_num, plan_snap, context_snap, source_status = _build_export_bytes(
+        context_id=payload.contextId,
+        plan_id=payload.planId,
+        plan_version=payload.planVersion,
+        export_format=payload.exportFormat,
+        db=db,
+        date_from=payload.dateFrom,
+        date_to=payload.dateTo,
+        plan_type_filter=payload.planTypeFilter,
+    )
+    timestamp_tag = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     struct_check = verify_exported_file_structure(file_bytes, fmt)
     if not struct_check.get("passed"):
@@ -1863,11 +1889,29 @@ def download_exported_file(
     db: Session = Depends(get_db),
 ):
     task = db.query(ExportTask).filter(ExportTask.id == export_id, ExportTask.context_id == contextId).first()
-    if not task or not os.path.isfile(task.file_path):
+    if not task:
         raise HTTPException(
             status_code=404,
             detail={"code": "EXPORT_FILE_NOT_FOUND", "message": "الملف المصدّر غير موجود ضمن هذا السياق."},
         )
+
+    if os.path.isfile(task.file_path):
+        with open(task.file_path, "rb") as f_in:
+            data = f_in.read()
+    else:
+        # Self-heal if container filesystem reset while ExportTask persisted in PostgreSQL
+        data, _, _, _, _, _, _, _ = _build_export_bytes(
+            context_id=task.context_id,
+            plan_id=task.plan_id,
+            plan_version=task.plan_version,
+            export_format=task.export_format,
+            db=db,
+            context_snap_override=task.context_snapshot,
+            source_status_override=task.source_verification_snapshot,
+        )
+        os.makedirs(os.path.dirname(task.file_path) or EXPORTS_DIR, exist_ok=True)
+        with open(task.file_path, "wb") as f_out:
+            f_out.write(data)
 
     mime_map = {
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1878,8 +1922,6 @@ def download_exported_file(
         "bundle_zip": "application/zip",
     }
     media_type = mime_map.get(task.export_format, "application/octet-stream")
-    with open(task.file_path, "rb") as f_in:
-        data = f_in.read()
 
     return Response(
         content=data,
