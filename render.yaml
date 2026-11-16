@@ -6,7 +6,7 @@ databases:
 
 services:
   - type: web
-    name: teacher-system2
+    name: teachersys
     runtime: docker
     plan: free
     autoDeploy: true
