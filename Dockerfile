@@ -15,6 +15,9 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends nodejs ca-certificates && rm -rf /var/lib/apt/lists/*
 
+COPY --from=tailscale/tailscale:stable /usr/local/bin/tailscaled /usr/local/bin/tailscaled
+COPY --from=tailscale/tailscale:stable /usr/local/bin/tailscale /usr/local/bin/tailscale
+
 COPY requirements.txt ./
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir fastapi uvicorn SQLAlchemy alembic pydantic pydantic-settings python-multipart python-dotenv psycopg2-binary httpx "pymupdf>=1.25.0,<2.0"

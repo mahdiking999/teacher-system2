@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-OMNIROUTE_BASE_URL = os.getenv("OMNIROUTE_BASE_URL", "http://127.0.0.1:20128/v1").rstrip("/")
-OMNIROUTE_API_KEY = os.getenv("OMNIROUTE_API_KEY", "sk-omniroute").strip()
+OMNIROUTE_BASE_URL = os.getenv("OMNIROUTE_BASE_URL", "http://100.120.103.82:20128/v1").rstrip("/")
+OMNIROUTE_API_KEY = os.getenv("OMNIROUTE_API_KEY", "sk-da9c432387749a32-7f7b6c-b16fecef").strip()
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").rstrip("/")
 
 TEXT_MODELS = [
@@ -44,7 +44,9 @@ def _next_nvidia_key(keys: List[str]) -> str:
 
 def get_ai_status() -> Dict[str, Any]:
     return {
-        "omnirouteBaseUrl": OMNIROUTE_BASE_URL,
+        "omnirouteBaseUrl": os.getenv("OMNIROUTE_BASE_URL", OMNIROUTE_BASE_URL).rstrip("/"),
+        "tailscaleAuthKeyConfigured": bool(os.getenv("TAILSCALE_AUTHKEY", "").strip()),
+        "tailscaleProxy": os.getenv("TAILSCALE_HTTP_PROXY", "").strip() or None,
         "directNvidiaConfigured": len(_get_nvidia_keys()) > 0,
         "textModels": TEXT_MODELS,
         "visionModels": VISION_MODELS,
@@ -88,6 +90,7 @@ def _post_chat_completion(
     user_prompt: str,
     image_png_bytes: Optional[bytes] = None,
     timeout_sec: float = 18.0,
+    proxy_url: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     if image_png_bytes:
         b64 = base64.b64encode(image_png_bytes).decode("ascii")
@@ -112,7 +115,10 @@ def _post_chat_completion(
         "Authorization": f"Bearer {api_key}",
     }
     timeout = httpx.Timeout(timeout_sec, connect=2.5)
-    with httpx.Client(timeout=timeout) as client:
+    client_kwargs: Dict[str, Any] = {"timeout": timeout}
+    if proxy_url:
+        client_kwargs["proxy"] = proxy_url
+    with httpx.Client(**client_kwargs) as client:
         resp = client.post(f"{base_url}/chat/completions", json=payload, headers=headers)
         resp.raise_for_status()
         data = resp.json()
@@ -134,17 +140,20 @@ def call_llm_json(
     models = VISION_MODELS if image_png_bytes else TEXT_MODELS
     omni_base = os.getenv("OMNIROUTE_BASE_URL", OMNIROUTE_BASE_URL).rstrip("/")
     omni_key = os.getenv("OMNIROUTE_API_KEY", OMNIROUTE_API_KEY).strip()
+    ts_proxy = os.getenv("TAILSCALE_HTTP_PROXY", "").strip() or None
 
     if omni_base:
+        proxy_candidates = [ts_proxy, None] if ts_proxy else [None]
         for m in models:
-            try:
-                parsed = _post_chat_completion(
-                    omni_base, omni_key, m, system_prompt, user_prompt, image_png_bytes, timeout_sec
-                )
-                if parsed is not None:
-                    return parsed, m
-            except Exception:
-                continue
+            for p_url in proxy_candidates:
+                try:
+                    parsed = _post_chat_completion(
+                        omni_base, omni_key, m, system_prompt, user_prompt, image_png_bytes, timeout_sec, proxy_url=p_url
+                    )
+                    if parsed is not None:
+                        return parsed, m
+                except Exception:
+                    continue
 
     nv_keys = _get_nvidia_keys()
     if nv_keys:

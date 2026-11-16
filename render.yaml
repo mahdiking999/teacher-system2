@@ -27,7 +27,9 @@ services:
       - key: OMNIROUTE_BASE_URL
         value: "http://100.120.103.82:20128/v1"
       - key: OMNIROUTE_API_KEY
-        value: "sk-omniroute"
+        value: "sk-da9c432387749a32-7f7b6c-b16fecef"
+      - key: TAILSCALE_AUTHKEY
+        value: ""
       - key: NVIDIA_API_KEYS
         value: ""
       - key: PILOT_ACCESS_PIN
