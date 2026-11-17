@@ -17,7 +17,7 @@ services:
           name: teacher-system2-db
           property: connectionString
       - key: ENABLE_DEMO_SEED
-        value: "1"
+        value: "0"
       - key: DATA_DIR
         value: "/app/data"
       - key: STORAGE_ROOT
@@ -26,11 +26,9 @@ services:
         value: "http://127.0.0.1:8000"
       - key: OMNIROUTE_BASE_URL
         value: "http://100.120.103.82:20128/v1"
-      - key: OMNIROUTE_API_KEY
-        value: "sk-da9c432387749a32-7f7b6c-b16fecef"
       - key: TAILSCALE_AUTHKEY
         value: ""
       - key: NVIDIA_API_KEYS
         value: ""
       - key: PILOT_ACCESS_PIN
-        value: ""
+        sync: false

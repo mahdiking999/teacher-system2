@@ -6,8 +6,8 @@
 
 ## 1. حقيقة الاستضافة وفصل الواجهة عن خدمة Python
 
-- **الواجهة الأمامية (`frontend/`)**: مبنية بـ React 19 وNext.js 16، وتدعم العمل على خادم Node أو عبر بنية Sites/Vinext. تتصل بخدمة الخلفية عبر العنوان المحدد في `NEXT_PUBLIC_API_BASE_URL` مع إعادة توجيه `/api/*` وتمرير ترويسة `X-Active-Context-Id` لعزل السياقات.
-- **خلفية Python (`backend/`)**: مبنية بـ **FastAPI** وتعمل عبر خادم ASGI (**Uvicorn**). لا تعمل داخل JavaScript Worker الخاص بـ Sites، بل تُنشر في خدمة Python مستقلة متصلة بقاعدة بيانات **PostgreSQL** دائمة للإنتاج (و**SQLite** للتطوير المحلي) مع تخزين ملفات دائم في `backend/storage/`.
+- **الواجهة الأمامية (`frontend/`)**: مبنية بـ React 19 وNext.js 16. تعيد توجيه طلبات `/api/*` إلى الخلفية وتمرير ترويسات الوصول اللازمة؛ متغير `NEXT_PUBLIC_API_BASE_URL` ليس سرًا ولا ينبغي وضع بيانات اعتماد فيه.
+- **خلفية Python (`backend/`)**: مبنية بـ **FastAPI** وتعمل عبر **Uvicorn**. قاعدة PostgreSQL والإعدادات الفعلية للنشر الحالي غير متحققة في هذا التدقيق. تخزين الحاوية المحلية على Render غير مضمون الاستمرارية ولا يُعامل كتخزين دائم.
 
 ---
 
@@ -18,6 +18,7 @@
 | `DATABASE_URL` | رابط قاعدة البيانات (SQLAlchemy) | `sqlite:///./teacher_system.db` | `postgresql+psycopg2://user:<SECRET>@db-host:5432/teacher_prod` |
 | `ALLOWED_ORIGINS` | قائمة أصول CORS المسموحة مفصولة بفواصل | `http://localhost:3000,http://127.0.0.1:3000` | `https://teacher-ui.example.com` |
 | `NEXT_PUBLIC_API_BASE_URL` | عنوان خدمة FastAPI للواجهة | `http://127.0.0.1:8000` | `https://teacher-api.example.com` |
+| `PILOT_ACCESS_PIN` | رمز وصول تجريبي مشترك مطلوب لكل `/api/*` عدا فحص الصحة | يجب ضبطه محليًا للاختبار | سر غير فارغ في مخزن أسرار Render؛ قيمته الفعلية غير متحققة |
 
 > **تنبيه أمني:** لا يُوضع أي مفتاح خدمة سري أو `DATABASE_URL` داخل متغيرات `NEXT_PUBLIC_*` أو في حزمة المتصفح (frontend bundle).
 
@@ -37,7 +38,7 @@
 ### ب. فحص الجاهزية وقاعدة البيانات (Readiness & Health Check)
 ```powershell
 curl http://127.0.0.1:8000/api/health
-# يعيد: {"status": "ok", "service": "teacher-system-fastapi", "databaseConnected": true, "databaseDialect": "postgresql|sqlite"}
+# يعيد: {"status": "ok"} بعد تنفيذ SELECT 1؛ لا يكشف نوع قاعدة البيانات
 ```
 
 ### ج. تشغيل الواجهة الأمامية (Next.js)
@@ -54,32 +55,26 @@ npm run start
 - **توليد وفحص ترحيلات PostgreSQL وSQLite:**
   يوفّر الملف [`backend/app/services/migration_and_backup.py`](../backend/app/services/migration_and_backup.py) دالة `generate_postgresql_and_sqlite_ddl()` التي تصدّر DDL الكامل المتوافق مع PostgreSQL (`TIMESTAMP WITH TIME ZONE`، `FOREIGN KEY ... ON DELETE CASCADE`، `JSON`) وSQLite، ويتم اختبارها آليًا في [`backend/tests/test_migrations_and_backup.py`](../backend/tests/test_migrations_and_backup.py).
 - **النسخ الاحتياطي والاستعادة (Backup & Restore):**
-  - عبر الكود: استدعاء `create_database_backup_json("backups/backup_YYYYMMDD.json")` يحفظ نسخة JSON كاملة لجميع السياقات والخطط والإصدارات والمصادر.
-  - عبر واجهة API المباشرة أثناء التشغيل:
-    - تنزيل نسخة احتياطية فورية: `GET /api/system/backup`
-    - استعادة نسخة احتياطية: `POST /api/system/restore` (يحفظ السياقات ويعيد بناءها فورًا).
+  - تنسيق JSON v2 يضم عشر مجموعات علائقية: السياقات، القوالب، المصادر، صفحات المصادر، الفصول، الدروس، الخطط، إصدارات الخطط، المراجعات، وبيانات مهام التصدير. تُقبل حمولات v1 القديمة للاستعادة.
+  - الاستعادة دمج غير هدّام بأسلوب upsert: لا تحذف الصفوف التي غابت عن النسخة. تُطبّق البيانات بترتيب المفاتيح الخارجية، ويُتراجع عن المعاملة عند فشل التحقق.
+  - لا تتضمن نسخة JSON ملفات PDF المرفوعة أو بايتات ملفات التصدير. تُزال مسارات الملفات المستعادة وتُعلّم ملفات المصادر/التصدير غير المتاحة؛ لذا فهذه ليست نسخة احتياطية كاملة لنظام الملفات.
+  - واجهات التشغيل: `GET /api/system/backup` و`POST /api/system/restore`، وكلتاهما تتطلبان ترويسة `X-Pilot-Pin`. `/api/health` هو مسار API الوحيد المستثنى من الرمز؛ غياب `PILOT_ACCESS_PIN` يعطل الوصول إلى بقية API برمز `503`.
+  - اختُبرت الاستعادة محليًا على SQLite فقط؛ لم يُتحقق من PostgreSQL أو النشر الحالي.
 
 ---
 
 ## 5. النشر المجاني الموحّد على Render مع PostgreSQL الدائمة (Render Free Tier Blueprint)
 
-لتفادي أخطاء مهلة التشغيل البارد (502 Cold-Start) بين خدمتين منفصلتين، ولضمان حفظ جميع البيانات بشكل دائم (وللترقية لاحقًا إلى حسابات المستخدمين وكلمات المرور) ضمن الخطة المجانية:
-1. يوفّر ملف [`render.yaml`](../render.yaml) قاعدة بيانات **Render PostgreSQL (`teacher-system2-db`, `plan: free`)** ويربطها تلقائيًا بمتغير `DATABASE_URL` في خدمة الويب (`teacher-system2`).
-2. يقوم [`backend/app/database.py`](../backend/app/database.py) بتطبيع روابط `postgres://` و`postgresql://` تلقائيًا إلى `postgresql+psycopg2://` مع دعم كامل لوضع **SQLite WAL** عند التشغيل المحلي.
-3. يجمع ملف [`Dockerfile`](../Dockerfile) كلًّا من **FastAPI (`127.0.0.1:8000`)** و**Next.js Standalone (`0.0.0.0:$PORT`)** في حاوية واحدة عبر [`scripts/start_prod.sh`](../scripts/start_prod.sh)، كما يُعيد مسار التنزيل `/api/exports/{id}/download` توليد ملفات `DOCX/PDF/PPTX/ZIP` تلقائيًا إذا أعادت الحاوية التشغيل بينما السجل محفوظ في PostgreSQL.
-4. خطوات الإطلاق:
-   1. ادفع التحديثات إلى فرع `main` على GitHub.
-   2. افتح **Render Dashboard → Blueprints** واختر مستودع `mahdiking999/teacher-system2` (أو اضغط **Manual sync** على الـ Blueprint الحالي).
-   3. اضغط **Apply** — وسيتم إنشاء قاعدة البيانات `teacher-system2-db` وتعبئتها تلقائيًا عند الإقلاع الأول (`ENABLE_DEMO_SEED=1`). يمكنك تعيين `PILOT_ACCESS_PIN` في متغيرات البيئة لقفل التعديلات برمز تجريبي أو تركه فارغًا للإتاحة المفتوحة.
+إعدادات Render المعرفة في [`render.yaml`](../render.yaml) لا تثبت حالة الخدمة الحية أو قيم الأسرار أو دوام التخزين؛ لم يُتحقق من إعداد Render الحالي في هذا التدقيق. الملف يطلب PostgreSQL ويضبط `ENABLE_DEMO_SEED=0` و`PILOT_ACCESS_PIN` كسر غير متزامن، لكن يجب على مشغل مخول تعيين قيمة PIN غير فارغة والتحقق منها دون تسجيلها. الرمز مطلوب لكل `/api/*` عدا `/api/health`؛ الخدمة غير مهيأة عند غيابه، ولا يعني الرمز هوية مستخدم أو عزل مؤسسي.
+
+تُعيد نقطة تنزيل التصدير توليد الملف عند غياب بايتاته ما دامت بيانات المهمة والمصدر متاحة، لكن التخزين المحلي داخل الحاوية غير دائم. ملفات PDF المرفوعة وملفات التصدير الثنائية غير موجودة في نسخة JSON لقاعدة البيانات؛ استخدم تخزينًا دائمًا ونسخ ملفات مستقلين قبل ادعاء استمرارية البيانات. لم تُجرَ هنا أي عملية نشر أو فحص حي؛ حالة Render وسبب 503 السابق غير معروفين.
 
 ---
 
-## 6. حدود بيئة التنفيذ والتطوير المحلي
+## 6. حدود التحقق الحالي
 
-- تعمل بيئة التنفيذ الحالية داخل وضع معزول شبكيًا (No external cloud credentials or remote hosting tokens configured).
-- لذلك تم تجهيز:
-  1. خدمة Python FastAPI الكاملة مع اختبارات التكامل والترحيلات.
-  2. بناء الإنتاج الكامل للواجهة الأمامية (`frontend/.next`).
-  3. ملفات التصدير الحقيقية (`DOCX`, `PDF`, `PPTX`, `ZIP`) ولقطات الشاشة الفعلية في `docs/evidence/`.
-- لم يتم اختلاق أي رابط سحابي خارجي؛ جميع الاختبارات وعمليات التحقق البصري أُجريت على الخوادم المحلية الفعلية (`127.0.0.1:8000` و`127.0.0.1:3000`).
+- التقرير المحلي الأحدث هو [`PILOT_TEST_REPORT.md`](./PILOT_TEST_REPORT.md): اختبارات الخادم على SQLite مؤقتة ومعزولة؛ لا تُعد دليلًا على سلوك PostgreSQL.
+- Docker وأدوات PostgreSQL وبيانات اعتماد Render غير متاحة للتحقق؛ لم تُرسل طلبات إلى الخدمة المنشورة، وسبب 503 السابق وحالة إعداداتها غير معروفين.
+- لم يُنفذ اختبار متصفح آلي لكل الصفحات الثلاث عشرة. نجاح بناء Next.js لا يعوض فحص TypeScript لأن الإعداد يتجاهل أخطاء الأنواع؛ شغّل `npm exec tsc -- --noEmit` منفصلًا.
+- تحقق النشر يجب أن يكون قراءة فقط، مع منع كشف بيانات شخصية أو أسرار. لا تُنفذ عمليات كتابة أو رفع أو توليد AI أو تصدير أو استعادة على الإنتاج.
 

@@ -37,6 +37,7 @@ interface AppContextValue {
   switchContext: (ctxId: string) => void;
   refreshContexts: () => Promise<void>;
   apiFetch: (path: string, options?: RequestInit) => Promise<any>;
+  downloadFile: (path: string, fileName?: string) => Promise<void>;
   openNewContextModal: () => void;
 }
 
@@ -129,6 +130,10 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
   const [showModal, setShowModal] = useState<boolean>(false);
   const [creatingContext, setCreatingContext] = useState<boolean>(false);
   const [modalError, setModalError] = useState<string>("");
+  const [accessPin, setAccessPin] = useState<string>("");
+  const [pinInput, setPinInput] = useState<string>("");
+  const [accessGranted, setAccessGranted] = useState<boolean>(false);
+  const [accessError, setAccessError] = useState<string>("");
 
   // New Context Form State — Starts 100% clean with NO assumed subject, grade, country, or teacher
   const [newCtxForm, setNewCtxForm] = useState(() => buildCleanCtxForm(""));
@@ -145,9 +150,19 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const refreshContexts = useCallback(async () => {
+    if (!accessPin) {
+      setLoadingContext(false);
+      return;
+    }
     setContextError("");
     try {
-      const res = await fetch("/api/contexts", { cache: "no-store" });
+      const res = await fetch("/api/contexts", { cache: "no-store", headers: { "X-Pilot-Pin": accessPin } });
+      if (res.status === 401 || res.status === 503) {
+        setAccessPin("");
+        setAccessGranted(false);
+        if (typeof window !== "undefined") window.sessionStorage.removeItem("agy_pilot_pin");
+        throw new Error(res.status === 503 ? "خدمة الوصول غير مهيأة؛ أبلغ المسؤول." : "انتهت جلسة الوصول؛ أدخل الرمز مجددًا.");
+      }
       if (!res.ok) {
         throw new Error(`تعذر تحميل السياقات التعليمية من الخادم (${res.status}).`);
       }
@@ -174,11 +189,20 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoadingContext(false);
     }
+  }, [accessPin]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const storedPin = window.sessionStorage.getItem("agy_pilot_pin") || "";
+    if (storedPin) {
+      setAccessPin(storedPin);
+      setAccessGranted(true);
+    }
   }, []);
 
   useEffect(() => {
-    refreshContexts();
-  }, [refreshContexts]);
+    if (accessPin) refreshContexts();
+  }, [accessPin, refreshContexts]);
 
   const activeContext = contexts.find((c) => c.id === activeContextId) || (contexts.length > 0 ? contexts[0] : null);
 
@@ -223,6 +247,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
       const currentCtxId = activeContext?.id || activeContextId;
       const headers = new Headers(options.headers || {});
       headers.set("X-Active-Context-Id", currentCtxId);
+      headers.set("X-Pilot-Pin", accessPin);
       if (!(options.body instanceof FormData) && !headers.has("Content-Type")) {
         headers.set("Content-Type", "application/json");
       }
@@ -231,6 +256,12 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
         headers,
         cache: "no-store",
       });
+      if (res.status === 401 || res.status === 503) {
+        setAccessPin("");
+        setAccessGranted(false);
+        if (typeof window !== "undefined") window.sessionStorage.removeItem("agy_pilot_pin");
+        throw new Error(res.status === 503 ? "خدمة الوصول غير مهيأة؛ أبلغ المسؤول." : "انتهت جلسة الوصول؛ أدخل الرمز مجددًا.");
+      }
       const contentType = res.headers.get("content-type") || "";
       if (contentType.includes("application/json")) {
         const json = await res.json();
@@ -244,8 +275,62 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
       }
       return res;
     },
-    [activeContext, activeContextId]
+    [activeContext, activeContextId, accessPin]
   );
+
+  const downloadFile = useCallback(async (path: string, fileName?: string) => {
+    const res = await fetch(path, { cache: "no-store", headers: { "X-Pilot-Pin": accessPin } });
+    if (res.status === 401 || res.status === 503) {
+      setAccessPin("");
+      setAccessGranted(false);
+      if (typeof window !== "undefined") window.sessionStorage.removeItem("agy_pilot_pin");
+      throw new Error(res.status === 503 ? "خدمة الوصول غير مهيأة؛ أبلغ المسؤول." : "انتهت جلسة الوصول؛ أدخل الرمز مجددًا.");
+    }
+    if (!res.ok) {
+      throw new Error(`فشل تنزيل الملف (${res.status})`);
+    }
+    const blob = await res.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const disposition = res.headers.get("Content-Disposition") || "";
+    const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+    const quotedName = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+    const responseName = encodedName ? decodeURIComponent(encodedName) : quotedName;
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.download = fileName || responseName || "download";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  }, [accessPin]);
+
+  const handleSubmitPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAccessError("");
+    const candidate = pinInput.trim();
+    try {
+      const res = await fetch("/api/contexts", { cache: "no-store", headers: { "X-Pilot-Pin": candidate } });
+      if (res.status === 401 || res.status === 503) {
+        throw new Error("رمز الوصول غير صحيح أو غير مهيأ.");
+      }
+      if (!res.ok) throw new Error("تعذر التحقق من رمز الوصول.");
+      setAccessPin(candidate);
+      setAccessGranted(true);
+      setPinInput("");
+      if (typeof window !== "undefined") window.sessionStorage.setItem("agy_pilot_pin", candidate);
+    } catch (err: any) {
+      setAccessError(err?.message || "تعذر التحقق من رمز الوصول.");
+    }
+  };
+
+  const handleLogout = () => {
+    setAccessPin("");
+    setAccessGranted(false);
+    setContexts([]);
+    setActiveContextId("");
+    setLoadingContext(false);
+    if (typeof window !== "undefined") window.sessionStorage.removeItem("agy_pilot_pin");
+  };
 
   const handleCreateContext = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -274,6 +359,29 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
   const uiIsRtl = !activeContext || isRtlLanguage(activeContext.language);
   const displayTeacherName = activeContext ? activeContext.teacherName : savedTeacherName;
 
+  if (!accessGranted) {
+    return (
+      <main className="page-container" style={{ maxWidth: "480px", margin: "12vh auto" }}>
+        <form className="card" onSubmit={handleSubmitPin}>
+          <h1 className="page-title">رمز الوصول التجريبي</h1>
+          <p className="page-subtitle">أدخل رمز الوصول للمتابعة. لا يتم حفظه بعد انتهاء جلسة المتصفح.</p>
+          <label className="form-label" htmlFor="pilot-access-pin">رمز الوصول</label>
+          <input
+            id="pilot-access-pin"
+            className="form-input"
+            type="password"
+            autoComplete="current-password"
+            value={pinInput}
+            onChange={(e) => setPinInput(e.target.value)}
+            required
+          />
+          {accessError && <div className="blocker-banner">{accessError}</div>}
+          <button className="btn btn-primary" type="submit" style={{ marginTop: "14px" }}>متابعة</button>
+        </form>
+      </main>
+    );
+  }
+
   return (
     <TeacherAppContext.Provider
       value={{
@@ -284,6 +392,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
         switchContext,
         refreshContexts,
         apiFetch,
+        downloadFile,
         openNewContextModal,
       }}
     >
@@ -481,6 +590,9 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
               <div className="avatar-circle">
                 {displayTeacherName?.trim() ? displayTeacherName.trim().slice(0, 2) : "👤"}
               </div>
+              <button type="button" className="btn btn-secondary" onClick={handleLogout} style={{ padding: "5px 9px", fontSize: "0.78rem" }}>
+                تسجيل الخروج
+              </button>
               <span style={{ fontWeight: 600 }}>
                 {displayTeacherName || (
                   <button

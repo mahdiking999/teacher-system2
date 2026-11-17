@@ -9,11 +9,13 @@
 
 ## 1. Executive Verdict
 
-Following multi-agent testing and remediation across backend, exports, AI workflows, and frontend UX:
-- **Backend Automated Verification (`pytest backend/tests/ -v`):** **26 / 26 passed in 1.79s** (including 5 new regression tests in `backend/tests/test_regressions_audit.py`).
+> **Superseded (2026-11-17, later audit pass).** The `26 / 26` and "Ready for pilot" verdict below is historical and no longer current. The latest local evidence is in [`PILOT_TEST_REPORT.md`](./PILOT_TEST_REPORT.md): **31 backend tests passed** on isolated SQLite, frontend typecheck passed, and the production build emitted all 15 pages. PostgreSQL runtime behavior, browser journeys, Render configuration, and the deployed service remain **unverified**. Pilot status is **BLOCKED / UNVERIFIED**.
+
+Historical result from this earlier pass (backend/exports/AI/frontend UX):
+- **Backend Automated Verification (`pytest backend/tests/ -v`):** **26 / 26 passed** at that time (superseded by the current 31-test suite).
 - **Frontend TypeScript Check (`npx tsc --noEmit`):** **Passed (exit code `0`)**.
-- **Frontend Production Build (`npm run build` with `NODE_OPTIONS="--max-old-space-size=400"`):** **15 / 15 Next.js App Router pages built cleanly (exit code `0`, compiled in `262ms`)**.
-- **Readiness Status:** Ready for pilot teacher onboarding locally and on Render once changes are deployed from `origin/main` and optional production environment variables are confirmed.
+- **Frontend Production Build (`npm run build`):** **15 / 15 Next.js App Router pages built** (exit code `0`).
+- **Readiness Status at the time:** not deployable — the subsequent audit pass found unauthenticated read APIs and a tracked credential, which are now addressed in source but still require Render configuration and isolated PostgreSQL validation.
 
 ---
 
@@ -66,7 +68,8 @@ Following multi-agent testing and remediation across backend, exports, AI workfl
 - `backend/app/services/pdf_service.py`:
   - Raised extraction page limit from `100` to `MAX_PDF_PAGES` (`600`) with `pymupdf` (`import pymupdf as fitz`) and `unicodedata.normalize("NFKC", ...)`.
 - `backend/app/services/migration_and_backup.py`:
-  - Expanded `export_database_backup_dict` and `restore_database_backup_dict` to export and upsert `templates`, `sources`, `chapters`, `lessons`, and `plans` in foreign-key order while retaining `backupVersion == "1.0"`.
+  - In this earlier pass, backup/restore was limited to `contexts`, `templates`, `sources`, `chapters`, `lessons`, and `plans` under `backupVersion == "1.0"`.
+  - **Now:** backup v2 exports all ten relational groups (contexts, templates, sources, source pages, chapters, lessons, plans, plan versions, plan reviews, export tasks). Restore is non-destructive upsert; omitted rows are retained, PDF/export bytes are not included, and restored file paths are cleared/marked unavailable. v1 payload restore remains supported. See [`PILOT_TEST_REPORT.md`](./PILOT_TEST_REPORT.md).
 - `backend/app/main.py`:
   - Returned `"version"` in `create_template`.
   - Enforced `expectedVersion` `409` concurrency check and automatic re-audit of linked unapproved plans in `update_source_metadata`.
@@ -96,21 +99,31 @@ Following multi-agent testing and remediation across backend, exports, AI workfl
 
 ## 4. Verification Results
 
-All automated checks were executed after all edits and appended to `handoff/verification_test_output.log`:
+> These rows are historical results from the earlier pass and are **not** the current validation. See [`PILOT_TEST_REPORT.md`](./PILOT_TEST_REPORT.md) for the current evidence, which must be re-run after any further edits.
 
-| Check | Command | Result |
+| Check | Command | Result (earlier pass) |
 | :--- | :--- | :--- |
-| Backend Full Test Suite | `.\.venv\Scripts\python.exe -m pytest backend/tests/ -v` | **26 passed in 1.79s** (`PYTEST_EXIT=0`) |
+| Backend Full Test Suite | `.\.venv\Scripts\python.exe -m pytest backend/tests/ -v` | **26 passed** (`PYTEST_EXIT=0`) — superseded by the current 31-test run |
 | Frontend TypeScript | `cd frontend && npx tsc --noEmit` | **Passed** (`TSC_EXIT=0`) |
-| Frontend Production Build | `cd frontend && NODE_OPTIONS="--max-old-space-size=400" npm run build` | **15 / 15 static pages built cleanly in 226ms** (`EXIT_CODE=0`) |
+| Frontend Production Build | `cd frontend && NODE_OPTIONS="--max-old-space-size=400" npm run build` | **15 / 15 static pages built** (`EXIT_CODE=0`) |
 
 > [!NOTE]
 > `next build` reported a Next.js `16.4.2` security advisory notice (`next upgrade --agent=security` recommended for a follow-up upgrade).
+>
+> `next.config.mjs` sets `typescript.ignoreBuildErrors: true`, so the build does not type-check. The explicit `tsc --noEmit` run is mandatory evidence; a successful build alone is not.
+>
+> These checks ran against isolated SQLite only. No PostgreSQL instance, Docker stack, browser suite, or deployed Render request was exercised.
 
 ---
 
 ## 5. Remaining Operator / Deployment Items
 
-1. **Deploy Updated Commit to Render:** Pushing these fixes to `origin/main` triggers automatic Render Docker rebuild and deployment to `https://teachersys.onrender.com`.
-2. **OmniRoute / AI Environment Variables on Render:** Verify `TAILSCALE_AUTHKEY` is current and valid on Render (`TAILSCALE_HTTP_PROXY=http://127.0.0.1:1055`, targeting `http://100.120.103.82:20128/v1`), and optionally set `NVIDIA_API_KEYS` as direct fallback when Tailscale/OmniRoute is offline.
-3. **Optional Teacher Gate (`PILOT_ACCESS_PIN`):** Populate `PILOT_ACCESS_PIN` in Render Environment Variables when sharing `https://teachersys.onrender.com` with teachers prior to Batch 6 multi-user authentication.
+Pilot exposure is **blocked** until all of the following are completed by an authorized operator:
+
+1. **Configure the access gate:** set a non-empty `PILOT_ACCESS_PIN` in the Render secret store. All `/api/*` routes except `/api/health` now return `503 PILOT_PIN_NOT_CONFIGURED` when the pin is unset and `401 PILOT_PIN_REQUIRED` for a missing/wrong pin, so an unset pin makes the app unusable rather than open. Do not record the value in source, logs, or evidence.
+2. **Rotate the exposed credential:** the formerly hard-coded AI key must be revoked externally and a replacement supplied through Render secrets, or AI left disabled (deterministic fallback only). Git-history exposure is unchanged by the working-tree removal; history remediation needs separate authorization.
+3. **Validate on isolated PostgreSQL:** search case-insensitivity, migrations, and v2 backup/restore round-trip are proven on SQLite only. Never substitute the production database.
+4. **Resolve the deployed 503 and verify readiness read-only:** service status, environment configuration, seed-off status (`ENABLE_DEMO_SEED=0`), `/api/health`, and PIN denial behavior are all unverified; the 503 cause is unresolved.
+5. **Treat Render local storage as non-durable:** uploaded source PDFs and generated export binaries are not covered by the JSON DB backup and are lost on container replacement; exports self-heal only when their metadata and source data still exist.
+6. **Run the deferred audits:** browser journeys across all 13 routes with a pinned Playwright dependency, and a redacted history/secret review, remain outstanding.
+7. **Gate deployment:** deploy only after the isolated PostgreSQL and browser gates pass. Deployed checks must stay read-only (no uploads, AI generation, exports, restores, or data mutation).

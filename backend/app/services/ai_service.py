@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 OMNIROUTE_BASE_URL = os.getenv("OMNIROUTE_BASE_URL", "http://100.120.103.82:20128/v1").rstrip("/")
-OMNIROUTE_API_KEY = os.getenv("OMNIROUTE_API_KEY", "sk-da9c432387749a32-7f7b6c-b16fecef").strip()
+OMNIROUTE_API_KEY = os.getenv("OMNIROUTE_API_KEY", "").strip()
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1").rstrip("/")
 
 TEXT_MODELS = [
@@ -43,13 +43,14 @@ def _next_nvidia_key(keys: List[str]) -> str:
 
 
 def get_ai_status() -> Dict[str, Any]:
+    omni_base = os.getenv("OMNIROUTE_BASE_URL", OMNIROUTE_BASE_URL).rstrip("/")
+    omni_ready = bool(omni_base and os.getenv("OMNIROUTE_API_KEY", "").strip())
+    ready = omni_ready or bool(_get_nvidia_keys())
     return {
-        "omnirouteBaseUrl": os.getenv("OMNIROUTE_BASE_URL", OMNIROUTE_BASE_URL).rstrip("/"),
-        "tailscaleAuthKeyConfigured": bool(os.getenv("TAILSCALE_AUTHKEY", "").strip()),
-        "tailscaleProxy": os.getenv("TAILSCALE_HTTP_PROXY", "").strip() or None,
-        "directNvidiaConfigured": len(_get_nvidia_keys()) > 0,
-        "textModels": TEXT_MODELS,
-        "visionModels": VISION_MODELS,
+        "available": ready,
+        "textGenerationReady": ready,
+        "visionGenerationReady": ready,
+        "fallbackAvailable": True,
     }
 
 
@@ -145,7 +146,7 @@ def call_llm_json(
     omni_key = os.getenv("OMNIROUTE_API_KEY", OMNIROUTE_API_KEY).strip()
     ts_proxy = os.getenv("TAILSCALE_HTTP_PROXY", "").strip() or None
 
-    if omni_base:
+    if omni_base and omni_key:
         proxy_candidates = [ts_proxy, None] if ts_proxy else [None]
         for m in models:
             for p_url in proxy_candidates:

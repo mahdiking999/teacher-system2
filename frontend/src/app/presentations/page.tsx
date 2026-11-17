@@ -10,7 +10,7 @@ function PresentationsContent() {
   const searchParams = useSearchParams();
   const urlPlanId = searchParams.get("planId") || "";
 
-  const { activeContext, activeContextId, apiFetch } = useTeacherApp();
+  const { activeContext, activeContextId, apiFetch, downloadFile } = useTeacherApp();
   const [plans, setPlans] = useState<any[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<string>("");
   const [slides, setSlides] = useState<any[]>([]);
@@ -204,7 +204,7 @@ function PresentationsContent() {
         }),
       });
       setLastExportLink({ url: res.downloadUrl, fileName: res.fileName });
-      window.open(res.downloadUrl, "_blank");
+      await downloadFile(res.downloadUrl, res.fileName);
       setFeedback(
         `تم توليد ملف العرض (${res.fileName}) بصيغة OOXML PPTX حقيقية بنصوص وعناصر قابلة للتحرير في PowerPoint!`
       );

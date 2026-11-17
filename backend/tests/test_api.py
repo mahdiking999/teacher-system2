@@ -3,10 +3,6 @@ import zipfile
 import io
 import pytest
 
-# Use a clean test database for pytest
-os.environ["DATABASE_URL"] = "sqlite:///./test_teacher_system.db"
-os.environ["ENABLE_DEMO_SEED"] = "1"
-
 from backend.app.main import (
     app,
     health_check,
@@ -59,8 +55,7 @@ def db():
 
 def test_health_and_seed_contexts(db):
     data = health_check(db=db)
-    assert data["status"] == "ok"
-    assert data["databaseConnected"] is True
+    assert data == {"status": "ok"}
 
     ctx_res = list_contexts(db=db)
     items = ctx_res["items"]

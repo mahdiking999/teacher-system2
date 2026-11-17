@@ -15,6 +15,7 @@ from backend.app.models import (
     PlanReview,
     ExportTask,
 )
+from sqlalchemy import Boolean, DateTime, Integer, String
 from sqlalchemy.dialects import postgresql, sqlite
 
 
@@ -41,180 +42,155 @@ def generate_postgresql_and_sqlite_ddl() -> dict:
     }
 
 
+def _serialize_entity(row):
+    return {
+        column.name: (value.isoformat() if isinstance(value, datetime) else value)
+        for column in row.__table__.columns
+        for value in [getattr(row, column.name)]
+    }
+
+
 def export_database_backup_dict() -> dict:
-    """
-    Returns a complete JSON-serializable backup dictionary of educational contexts,
-    templates, curriculum sources, chapters, lessons, plans, and summary counts.
-    Works identically on PostgreSQL and SQLite.
-    """
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        contexts = db.query(EducationalContext).all()
-        templates = db.query(PhaseTemplate).all()
-        sources = db.query(CurriculumSource).all()
-        chapters = db.query(Chapter).all()
-        lessons = db.query(Lesson).all()
-        plans = db.query(Plan).all()
+        entity_groups = {
+            "contexts": db.query(EducationalContext).all(),
+            "templates": db.query(PhaseTemplate).all(),
+            "sources": db.query(CurriculumSource).all(),
+            "source_pages": db.query(SourcePage).all(),
+            "chapters": db.query(Chapter).all(),
+            "lessons": db.query(Lesson).all(),
+            "plans": db.query(Plan).all(),
+            "plan_versions": db.query(PlanVersion).all(),
+            "plan_reviews": db.query(PlanReview).all(),
+            "export_tasks": db.query(ExportTask).all(),
+        }
+        contexts = entity_groups["contexts"]
+        templates = entity_groups["templates"]
+        sources = entity_groups["sources"]
+        source_pages = entity_groups["source_pages"]
+        chapters = entity_groups["chapters"]
+        lessons = entity_groups["lessons"]
+        plans = entity_groups["plans"]
+        plan_versions = entity_groups["plan_versions"]
+        plan_reviews = entity_groups["plan_reviews"]
+        export_tasks = entity_groups["export_tasks"]
         return {
-            "backupVersion": "1.0",
+            "backupVersion": "2.0",
             "createdAt": datetime.now(timezone.utc).isoformat(),
-            "contexts": [
-                {
-                    "id": c.id,
-                    "subject": c.subject,
-                    "grade": c.grade,
-                    "country": c.country,
-                    "curriculum_name": c.curriculum_name,
-                    "language": c.language,
-                    "year": c.year,
-                    "edition": c.edition,
-                    "ui_language": c.ui_language,
-                    "teacher_name": c.teacher_name,
-                    "school_name": c.school_name,
-                    "section_name": c.section_name,
-                    "planning_date": c.planning_date,
-                    "school_days": c.school_days,
-                    "holidays": c.holidays,
-                    "default_period_Minutes": c.default_period_Minutes,
-                    "default_periods_count": c.default_periods_count,
-                    "selected_tools": c.selected_tools,
-                    "document_preferences": c.document_preferences,
-                    "active_template_id": c.active_template_id,
-                    "version": c.version,
-                }
-                for c in contexts
-            ],
-            "templates": [
-                {
-                    "id": t.id,
-                    "context_id": t.context_id,
-                    "name": t.name,
-                    "description": t.description,
-                    "is_default": t.is_default,
-                    "periods_count": t.periods_count,
-                    "period_minutes": t.period_minutes,
-                    "phases": t.phases,
-                    "version": t.version,
-                }
-                for t in templates
-            ],
-            "sources": [
-                {
-                    "id": s.id,
-                    "context_id": s.context_id,
-                    "title": s.title,
-                    "source_type": s.source_type,
-                    "file_name": s.file_name,
-                    "file_size": s.file_size,
-                    "sha256_fingerprint": s.sha256_fingerprint,
-                    "page_count": s.page_count,
-                    "extraction_status": s.extraction_status,
-                    "book_year": s.book_year,
-                    "edition": s.edition,
-                    "source_url": s.source_url,
-                    "is_official_claimed": s.is_official_claimed,
-                    "official_evidence": s.official_evidence,
-                    "verification_status": s.verification_status,
-                    "reviewer_name": s.reviewer_name,
-                    "review_notes": s.review_notes,
-                    "index_approved": s.index_approved,
-                    "version": s.version,
-                }
-                for s in sources
-            ],
-            "chapters": [
-                {
-                    "id": ch.id,
-                    "context_id": ch.context_id,
-                    "source_id": ch.source_id,
-                    "title": ch.title,
-                    "order_index": ch.order_index,
-                    "pdf_start_page": ch.pdf_start_page,
-                    "printed_start_page": ch.printed_start_page,
-                    "is_documented": ch.is_documented,
-                    "provenance_label": ch.provenance_label,
-                }
-                for ch in chapters
-            ],
-            "lessons": [
-                {
-                    "id": l.id,
-                    "context_id": l.context_id,
-                    "source_id": l.source_id,
-                    "chapter_id": l.chapter_id,
-                    "title": l.title,
-                    "code_or_order": l.code_or_order,
-                    "pdf_page_number": l.pdf_page_number,
-                    "printed_page_number": l.printed_page_number,
-                    "content_origin": l.content_origin,
-                    "provenance_label": l.provenance_label,
-                    "objectives": l.objectives,
-                    "prior_knowledge": l.prior_knowledge,
-                    "activities": l.activities,
-                    "questions_and_solutions": l.questions_and_solutions,
-                    "evaluation_criteria": l.evaluation_criteria,
-                    "key_terms_or_quotes": l.key_terms_or_quotes,
-                    "review_status": l.review_status,
-                    "version": l.version,
-                }
-                for l in lessons
-            ],
-            "plans": [
-                {
-                    "id": p.id,
-                    "context_id": p.context_id,
-                    "source_id": p.source_id,
-                    "primary_lesson_id": p.primary_lesson_id,
-                    "secondary_lesson_id": p.secondary_lesson_id,
-                    "title": p.title,
-                    "plan_type": p.plan_type,
-                    "status": p.status,
-                    "context_snapshot": p.context_snapshot,
-                    "teacher_name": p.teacher_name,
-                    "school_name": p.school_name,
-                    "section_name": p.section_name,
-                    "planning_date": p.planning_date,
-                    "lessons_count": p.lessons_count,
-                    "periods_count": p.periods_count,
-                    "period_minutes": p.period_minutes,
-                    "total_allocated_minutes": p.total_allocated_minutes,
-                    "objectives": p.objectives,
-                    "prior_knowledge": p.prior_knowledge,
-                    "teacher_role": p.teacher_role,
-                    "student_role": p.student_role,
-                    "teaching_tools": p.teaching_tools,
-                    "phases": p.phases,
-                    "formative_assessment": p.formative_assessment,
-                    "differentiation": p.differentiation,
-                    "homework": p.homework,
-                    "home_enrichment_minutes": p.home_enrichment_minutes,
-                    "references_note": p.references_note,
-                    "planning_notes": p.planning_notes,
-                    "subject_items": p.subject_items,
-                    "schedule_days": p.schedule_days,
-                    "slides": p.slides,
-                    "presentation_settings": p.presentation_settings,
-                    "content_origin": p.content_origin,
-                    "provenance_label": p.provenance_label,
-                    "version": p.version,
-                }
-                for p in plans
-            ],
+            "notes": "Relational entities only. Raw PDF and export file binaries must be preserved separately in STORAGE_ROOT.",
+            "contexts": [_serialize_entity(row) for row in contexts],
+            "templates": [_serialize_entity(row) for row in templates],
+            "sources": [_serialize_entity(row) for row in sources],
+            "source_pages": [_serialize_entity(row) for row in source_pages],
+            "chapters": [_serialize_entity(row) for row in chapters],
+            "lessons": [_serialize_entity(row) for row in lessons],
+            "plans": [_serialize_entity(row) for row in plans],
+            "plan_versions": [_serialize_entity(row) for row in plan_versions],
+            "plan_reviews": [_serialize_entity(row) for row in plan_reviews],
+            "export_tasks": [_serialize_entity(row) for row in export_tasks],
             "plansCount": len(plans),
             "lessonsCount": len(lessons),
             "sourcesCount": len(sources),
+            "sourcePagesCount": len(source_pages),
+            "planVersionsCount": len(plan_versions),
+            "planReviewsCount": len(plan_reviews),
+            "exportTasksCount": len(export_tasks),
         }
     finally:
         db.close()
 
 
+def _restore_version_two(payload: dict) -> dict:
+    table_groups = [
+        ("contexts", EducationalContext),
+        ("templates", PhaseTemplate),
+        ("sources", CurriculumSource),
+        ("source_pages", SourcePage),
+        ("chapters", Chapter),
+        ("lessons", Lesson),
+        ("plans", Plan),
+        ("plan_versions", PlanVersion),
+        ("plan_reviews", PlanReview),
+        ("export_tasks", ExportTask),
+    ]
+    expected_keys = {key for key, _ in table_groups}
+    if not expected_keys.issubset(payload):
+        missing = sorted(expected_keys.difference(payload))
+        raise ValueError(f"Invalid backup payload: missing entity groups: {', '.join(missing)}")
+    normalized = {}
+    for key, model in table_groups:
+        rows = payload[key]
+        if not isinstance(rows, list):
+            raise ValueError(f"Invalid backup payload: '{key}' must be a list")
+        valid_rows = []
+        allowed = {column.name: column for column in model.__table__.columns}
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"].strip():
+                raise ValueError(f"Invalid backup payload: every '{key}' entry must have an id")
+            values = {name: value for name, value in row.items() if name in allowed}
+            for name, value in list(values.items()):
+                column_type = allowed[name].type
+                if isinstance(column_type, DateTime) and isinstance(value, str):
+                    values[name] = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                elif isinstance(column_type, Integer) and value is not None and (not isinstance(value, int) or isinstance(value, bool)):
+                    raise ValueError(f"Invalid backup payload: '{key}.{name}' must be an integer")
+                elif isinstance(column_type, Boolean) and value is not None and not isinstance(value, bool):
+                    raise ValueError(f"Invalid backup payload: '{key}.{name}' must be a boolean")
+                elif isinstance(column_type, String) and value is not None and not isinstance(value, str):
+                    raise ValueError(f"Invalid backup payload: '{key}.{name}' must be a string")
+            if key == "sources":
+                values["file_path"] = ""
+                if row.get("file_path"):
+                    values["extraction_status"] = "no_file"
+            if key == "export_tasks":
+                values["file_path"] = ""
+                values["file_size"] = 0
+                details = values.get("structural_check_details")
+                if not isinstance(details, dict):
+                    details = {}
+                values["structural_check_details"] = {**details, "artifactAvailable": False}
+            valid_rows.append(values)
+        normalized[key] = (model, valid_rows)
+
+    Base.metadata.create_all(bind=engine)
+    db = SessionLocal()
+    counts = {}
+    try:
+        for key, _ in table_groups:
+            model, rows = normalized[key]
+            restored = 0
+            for values in rows:
+                entity = db.get(model, values["id"])
+                if entity is None:
+                    entity = model(id=values["id"])
+                    db.add(entity)
+                for name, value in values.items():
+                    setattr(entity, name, value)
+                restored += 1
+            db.flush()
+            counts[key] = restored
+        db.commit()
+        return {
+            "backupVersion": "2.0",
+            "mergeSemantics": "Upsert only; records absent from the payload are retained.",
+            "restoredCounts": counts,
+            "restoredContextsCount": counts["contexts"],
+            "restoredPlansCount": counts["plans"],
+        }
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def restore_database_backup_dict(payload: dict) -> dict:
-    """
-    Validates a backup payload (v1.0) and upserts contexts and related entities in FK order.
-    """
-    if not isinstance(payload, dict) or payload.get("backupVersion") != "1.0":
-        raise ValueError("Invalid backupVersion: expected '1.0'")
+    if not isinstance(payload, dict) or payload.get("backupVersion") not in ("1.0", "2.0"):
+        raise ValueError("Invalid backupVersion: expected '1.0' or '2.0'")
+    if payload.get("backupVersion") == "2.0":
+        return _restore_version_two(payload)
     contexts_data = payload.get("contexts")
     if not isinstance(contexts_data, list):
         raise ValueError("Invalid backup payload: 'contexts' must be a list")

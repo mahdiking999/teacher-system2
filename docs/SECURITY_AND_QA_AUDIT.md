@@ -13,12 +13,19 @@
 | **ثبات السياق التاريخي عند التعديل** | حفظ لقطة السياق السبعة `context_snapshot` داخل `PlanVersion` و`ExportTask` بحيث لا يغيّر تعديل السياق لاحقًا أي إصدار سابق | [`backend/app/models.py`](../backend/app/models.py) (`PlanVersion`, `ExportTask`) | `test_plan_audit_approval_and_revocation_on_edit` في [`test_api.py`](../backend/tests/test_api.py) | ✅ ناجح |
 | **إلغاء الاعتماد عند التعديل اللاحق** | أي تعديل على خطة معتمدة يرفع رقم الإصدار `version += 1` ويعيد حالة الإصدار الجديد إلى مسودة/مراجعة مع بقاء الإصدار المعتمد محفوظًا في `plan_versions` | [`backend/app/main.py`](../backend/app/main.py) (`update_plan`) | `test_plan_audit_approval_and_revocation_on_edit` في [`test_api.py`](../backend/tests/test_api.py) | ✅ ناجح |
 | **فحص التوقيع الفعلي لملف PDF ومنع Path Traversal** | فحص البايتات السحرية `%PDF-` في ترويسة الملف وتطهير اسم الملف بـ `os.path.basename` وتعبير نمطي آمن | [`backend/app/services/pdf_service.py`](../backend/app/services/pdf_service.py) (`inspect_and_extract_pdf`) | `test_pdf_upload_signature_validation_and_real_exports` في [`test_api.py`](../backend/tests/test_api.py) | ✅ ناجح |
-| **منع تسريب Traceback والأسرار** | معالج استثناءات موحد يرجع رسالة عربية مفهومة ورمز خطأ ثابت ومعرف الطلب `X-Request-ID` فقط | [`backend/app/main.py`](../backend/app/main.py) (`request_id_and_security_middleware`) | مفحوص في جميع مسارات الأخطاء | ✅ ناجح |
+| **منع تسريب Traceback والأسرار** | معالج استثناءات موحد يرجع رسالة عربية مفهومة ورمز خطأ ثابت ومعرف الطلب `X-Request-ID` فقط | [`backend/app/main.py`](../backend/app/main.py) (`request_id_and_security_middleware`) | مفحوص في مسارات الخطأ ضمن الاختبارات المحلية؛ لا يوجد تحقق نشر | ✅ محليًا / النشر غير متحقق |
 | **منع القسمة على صفر والأخطاء العددية** | محلل AST رياضي آمن يفحص المقامات قبل القسمة ويرفع `MATH_DIVISION_BY_ZERO` ويقارن الحل العددي والوحدات | [`backend/app/services/audit_service.py`](../backend/app/services/audit_service.py) (`safe_eval_math_expression`) | `test_math_safe_eval_and_zero_division` في [`test_audit_and_math.py`](../backend/tests/test_audit_and_math.py) | ✅ ناجح |
 
 ---
 
-## 2. فصل عوائق الإصدار/الاعتماد عن تحذيرات المصادر
+## 2. تحديث حالة التحقق الأمني (2026-11-17)
+
+- البنود أعلاه تصف ضوابط واختبارات سابقة، ولا تثبت تشغيل PostgreSQL أو نشر Render. أحدث النتائج المحلية موثقة في [`PILOT_TEST_REPORT.md`](./PILOT_TEST_REPORT.md): 31 اختبارًا ناجحًا باستخدام SQLite مؤقتة ومعزولة، مع اختبارات رفض API والتصدير عند غياب رمز الوصول.
+- كل `/api/*` عدا `/api/health` يتطلب `X-Pilot-Pin`. الرمز المشترك ليس هوية مستخدم أو عزلًا للمستأجرين. واجهات التوثيق وOpenAPI معطلة، ورمز الوصول غير المضبوط يمنع الوصول للمسارات المحمية؛ إعداد Render الفعلي غير متحقق.
+- اختبار البحث المختلط وترميم النسخ الاحتياطي v2 أجري على SQLite فقط؛ تحقق PostgreSQL، رحلة المتصفح، وحالة الخدمة/503 على Render غير متاحة. لا تُعد نتائج SQLite إثباتًا لها.
+- مسح أنماط بيانات الاعتماد في الملفات الحالية لم يجد تطابقات؛ مسح تاريخ Git المنقح وجد commit واحدًا مطابقًا. الإلغاء/التدوير الخارجي غير متحقق، وتنظيف التاريخ يتطلب تفويضًا منفصلًا.
+
+## 3. فصل عوائق الإصدار/الاعتماد عن تحذيرات المصادر
 
 1. **عوائق اعتماد الخطة (`BLOCKER`)**:
    - غياب طريقة التقويم التكويني (`MISSING_FORMATIVE_ASSESSMENT`).

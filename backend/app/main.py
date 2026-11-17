@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import io
 import json
 import os
@@ -86,6 +87,9 @@ app = FastAPI(
     title="مساعد المدرس لأي مادة ومنهج وسياق تعليمي — FastAPI Backend",
     description="خدمة Python FastAPI مستقلة مع دعم SQLite/PostgreSQL وعزل السياقات وتدقيق المحتوى التخصصي وتوليد DOCX/PDF/PPTX الفعلي.",
     version="1.0.0",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 ALLOWED_ORIGINS_RAW = os.getenv("ALLOWED_ORIGINS", "").strip()
@@ -109,10 +113,7 @@ else:
         "http://127.0.0.1:3001",
     ]
     origins_set = list(dict.fromkeys(default_origins + configured_origins))
-    lan_origin_regex = os.getenv(
-        "CORS_ORIGIN_REGEX",
-        r"^https?://(localhost|127\.0\.0\.1|0\.0\.0\.0|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})(:\d+)?$",
-    )
+    lan_origin_regex = os.getenv("CORS_ORIGIN_REGEX", "").strip() or None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins_set,
@@ -139,20 +140,18 @@ async def request_id_and_security_middleware(request: Request, call_next):
     req_id = request.headers.get("X-Request-ID") or f"req_{uuid.uuid4().hex[:10]}"
     request.state.request_id = req_id
     pilot_pin = os.getenv("PILOT_ACCESS_PIN", "").strip()
-    if pilot_pin and request.url.path.startswith("/api/") and request.method in ("POST", "PUT", "PATCH", "DELETE"):
-        provided_pin = (
-            request.headers.get("X-Pilot-Pin")
-            or request.query_params.get("pin")
-            or ""
-        ).strip()
-        if provided_pin != pilot_pin:
+    if request.url.path.startswith("/api/") and request.url.path != "/api/health":
+        provided_pin = request.headers.get("X-Pilot-Pin", "").strip()
+        pin_configured = bool(pilot_pin)
+        pin_valid = pin_configured and hmac.compare_digest(provided_pin, pilot_pin)
+        if not pin_valid:
             return JSONResponse(
-                status_code=401,
+                status_code=503 if not pin_configured else 401,
                 headers={"X-Request-ID": req_id},
                 content={
                     "error": True,
-                    "code": "PILOT_PIN_REQUIRED",
-                    "message": "يتطلب إجراء التعديل إدخال رمز الوصول التجريبي (X-Pilot-Pin).",
+                    "code": "PILOT_PIN_NOT_CONFIGURED" if not pin_configured else "PILOT_PIN_REQUIRED",
+                    "message": "خدمة الوصول التجريبية غير مهيأة." if not pin_configured else "يتطلب الوصول إدخال رمز الوصول التجريبي.",
                     "requestId": req_id,
                 },
             )
@@ -408,14 +407,7 @@ def serialize_plan(pln: Plan) -> dict:
 @app.get("/api/health")
 def health_check(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
-    dialect = "postgresql" if DATABASE_URL.startswith("postgres") else "sqlite"
-    return {
-        "status": "ok",
-        "service": "teacher-system-fastapi",
-        "databaseConnected": True,
-        "databaseDialect": dialect,
-        "timestamp": utcnow().isoformat(),
-    }
+    return {"status": "ok"}
 
 
 # ==============================================================================
@@ -741,10 +733,10 @@ def update_source_metadata(
             src.reviewed_at = utcnow()
             ctx_parent = db.query(EducationalContext).filter(EducationalContext.id == payload.contextId).first()
             if ctx_parent:
-                if not ctx_parent.academic_year and src.book_year:
-                    ctx_parent.academic_year = src.book_year
-                if not ctx_parent.book_edition and src.edition:
-                    ctx_parent.book_edition = src.edition
+                if not ctx_parent.year and src.book_year:
+                    ctx_parent.year = src.book_year
+                if not ctx_parent.edition and src.edition:
+                    ctx_parent.edition = src.edition
                 if not ctx_parent.curriculum_name and src.title:
                     ctx_parent.curriculum_name = src.title
         else:
@@ -858,7 +850,7 @@ def create_chapter(
 def list_lessons(contextId: str = Query(...), q: Optional[str] = Query(default=None), db: Session = Depends(get_db)):
     query = db.query(Lesson).filter(Lesson.context_id == contextId)
     if q and q.strip():
-        query = query.filter(Lesson.title.contains(q.strip()))
+        query = query.filter(Lesson.title.ilike(f"%{q.strip()}%"))
     lessons = query.order_by(Lesson.created_at.asc()).all()
     return {"items": [serialize_lesson(l) for l in lessons]}
 
@@ -2047,10 +2039,10 @@ def get_system_backup():
 
 @app.post("/api/system/restore")
 def post_system_restore(payload: dict):
-    if not isinstance(payload, dict) or payload.get("backupVersion") != "1.0":
+    if not isinstance(payload, dict) or payload.get("backupVersion") not in ("1.0", "2.0"):
         raise HTTPException(
             status_code=400,
-            detail={"code": "INVALID_BACKUP_PAYLOAD", "message": "ملف النسخة الاحتياطية غير صالح."},
+            detail={"code": "INVALID_BACKUP_VERSION", "message": "إصدار النسخة الاحتياطية غير مدعوم."},
         )
     try:
         return restore_database_backup_dict(payload)

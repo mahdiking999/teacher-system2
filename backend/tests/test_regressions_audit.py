@@ -1,12 +1,13 @@
 import io
 import json
+import os
 import zipfile
 import pymupdf
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
 from backend.app.database import Base, engine, SessionLocal
-from backend.app.models import EducationalContext
+from backend.app.models import EducationalContext, CurriculumSource, Plan, PlanVersion, PlanReview
 from backend.app.services.ai_service import _extract_json_from_text, _normalize_phases_minutes
 from backend.app.services.audit_service import audit_plan_and_context, run_subject_tool, safe_eval_math_expression
 from backend.app.services.export_service import (
@@ -108,9 +109,137 @@ def test_audit_and_subject_tools_edge_cases():
     assert "NEGATIVE_SCHEDULE_DURATION" in codes
 
 
+def test_lesson_search_is_case_insensitive_and_supports_arabic(monkeypatch):
+    monkeypatch.setenv("PILOT_ACCESS_PIN", "test-pin")
+    Base.metadata.create_all(bind=engine)
+    context_id = None
+    try:
+        with TestClient(app) as client:
+            context = client.post(
+                "/api/contexts",
+                headers={"X-Pilot-Pin": "test-pin"},
+                json={"subject": "علوم", "grade": "الثالث"},
+            ).json()
+            context_id = context["id"]
+            headers = {"X-Pilot-Pin": "test-pin", "X-Active-Context-Id": context_id}
+            for title in ("Mixed Case Lesson", "درس في العلوم"):
+                response = client.post(
+                    "/api/lessons",
+                    headers=headers,
+                    json={"contextId": context_id, "title": title},
+                )
+                assert response.status_code == 201
+
+            lower_case = client.get(
+                "/api/lessons",
+                params={"contextId": context_id, "q": "mixed case"},
+                headers=headers,
+            )
+            arabic = client.get(
+                "/api/lessons",
+                params={"contextId": context_id, "q": "العلوم"},
+                headers=headers,
+            )
+            no_match = client.get(
+                "/api/lessons",
+                params={"contextId": context_id, "q": "not present"},
+                headers=headers,
+            )
+            assert [item["title"] for item in lower_case.json()["items"]] == ["Mixed Case Lesson"]
+            assert [item["title"] for item in arabic.json()["items"]] == ["درس في العلوم"]
+            assert no_match.json()["items"] == []
+    finally:
+        if context_id:
+            db = SessionLocal()
+            try:
+                db.query(EducationalContext).filter(EducationalContext.id == context_id).delete()
+                db.commit()
+            finally:
+                db.close()
+
+
+def test_source_verification_updates_context_and_reaudits_linked_plan(monkeypatch):
+    monkeypatch.setenv("PILOT_ACCESS_PIN", "test-pin")
+    monkeypatch.setenv("OMNIROUTE_BASE_URL", "")
+    Base.metadata.create_all(bind=engine)
+    context_id = None
+    uploaded_path = None
+    try:
+        with TestClient(app) as client:
+            headers = {"X-Pilot-Pin": "test-pin"}
+            context = client.post(
+                "/api/contexts",
+                headers=headers,
+                json={"subject": "الرياضيات", "grade": "السابع"},
+            ).json()
+            context_id = context["id"]
+            headers["X-Active-Context-Id"] = context_id
+            upload = client.post(
+                "/api/sources/upload",
+                headers=headers,
+                data={"contextId": context_id, "title": "كتاب الرياضيات"},
+                files={"file": ("synthetic.pdf", b"%PDF-1.7\\n1 0 obj<<>>endobj\\n", "application/pdf")},
+            )
+            assert upload.status_code == 201
+            source = upload.json()
+            uploaded_path = source.get("filePath")
+            plan = client.post(
+                "/api/plans",
+                headers=headers,
+                json={
+                    "contextId": context_id,
+                    "sourceId": source["id"],
+                    "title": "خطة اختبار المصدر",
+                    "planType": "daily",
+                    "objectives": ["هدف قابل للقياس"],
+                    "formativeAssessment": "سؤال ختامي",
+                    "periodsCount": 1,
+                    "periodMinutes": 45,
+                    "phases": [
+                        {"phaseName": "التدريس", "minutes": 45, "teacherActivity": "شرح", "studentActivity": "مشاركة"}
+                    ],
+                },
+            )
+            assert plan.status_code == 201
+            plan_id = plan.json()["id"]
+            before = client.get(f"/api/plans/{plan_id}", params={"contextId": context_id}, headers=headers).json()
+            assert any(finding["code"] == "SOURCE_PENDING_VERIFICATION" for finding in before["latestReview"]["findings"])
+
+            verified = client.put(
+                f"/api/sources/{source['id']}",
+                headers=headers,
+                json={
+                    "contextId": context_id,
+                    "title": "كتاب الرياضيات",
+                    "bookYear": "2026",
+                    "edition": "الثانية",
+                    "sourceUrl": "https://example.invalid/synthetic",
+                    "reviewerName": "مراجع اختباري",
+                    "verificationStatus": "human_verified",
+                },
+            )
+            assert verified.status_code == 200
+            after = client.get(f"/api/plans/{plan_id}", params={"contextId": context_id}, headers=headers).json()
+            assert all(finding["code"] != "SOURCE_PENDING_VERIFICATION" for finding in after["latestReview"]["findings"])
+            updated_context = client.get(f"/api/contexts/{context_id}", headers=headers).json()
+            assert updated_context["year"] == "2026"
+            assert updated_context["edition"] == "الثانية"
+    finally:
+        if context_id:
+            db = SessionLocal()
+            try:
+                for source in db.query(CurriculumSource).filter(CurriculumSource.context_id == context_id).all():
+                    if source.file_path and os.path.isfile(source.file_path):
+                        os.remove(source.file_path)
+                db.query(EducationalContext).filter(EducationalContext.id == context_id).delete()
+                db.commit()
+            finally:
+                db.close()
+
+
 def test_security_revocation_isolation_and_report_docx(monkeypatch):
     monkeypatch.setenv("ENABLE_DEMO_SEED", "0")
-    monkeypatch.delenv("PILOT_ACCESS_PIN", raising=False)
+    monkeypatch.setenv("PILOT_ACCESS_PIN", "test-pin")
     monkeypatch.setenv("OMNIROUTE_BASE_URL", "")
     monkeypatch.delenv("NVIDIA_API_KEYS", raising=False)
     Base.metadata.create_all(bind=engine)
@@ -118,10 +247,11 @@ def test_security_revocation_isolation_and_report_docx(monkeypatch):
     ctx1_id = ctx2_id = None
     try:
         with TestClient(app) as client:
-            c1 = client.post("/api/contexts", json={"subject": "الرياضيات", "grade": "الأول", "year": "2025", "edition": "1"}).json()
-            c2 = client.post("/api/contexts", json={"subject": "الفيزياء", "grade": "الثاني", "year": "2026", "edition": "1"}).json()
+            c1 = client.post("/api/contexts", headers={"X-Pilot-Pin": "test-pin"}, json={"subject": "الرياضيات", "grade": "الأول", "year": "2025", "edition": "1"}).json()
+            c2 = client.post("/api/contexts", headers={"X-Pilot-Pin": "test-pin"}, json={"subject": "الفيزياء", "grade": "الثاني", "year": "2026", "edition": "1"}).json()
             ctx1_id, ctx2_id = c1["id"], c2["id"]
-            h1, h2 = {"X-Active-Context-Id": ctx1_id}, {"X-Active-Context-Id": ctx2_id}
+            h1 = {"X-Active-Context-Id": ctx1_id, "X-Pilot-Pin": "test-pin"}
+            h2 = {"X-Active-Context-Id": ctx2_id, "X-Pilot-Pin": "test-pin"}
 
             # Cross-context chapter in lesson -> 400
             src1 = client.post(
@@ -178,17 +308,17 @@ def test_security_revocation_isolation_and_report_docx(monkeypatch):
             # report_docx includes patternSummary & documentationGaps
             exp_rep = client.post("/api/exports", headers=h1, json={"contextId": ctx1_id, "exportFormat": "report_docx"})
             assert exp_rep.status_code == 201
-            dl_rep = client.get(exp_rep.json()["downloadUrl"])
+            dl_rep = client.get(exp_rep.json()["downloadUrl"], headers={"X-Pilot-Pin": "test-pin"})
             assert dl_rep.status_code == 200
             with zipfile.ZipFile(io.BytesIO(dl_rep.content), "r") as zf:
                 doc_xml = zf.read("word/document.xml").decode("utf-8")
                 assert "ملخص التخطيط حسب النمط" in doc_xml
 
             # Invalid restore payload -> 400 (not 500)
-            bad_restore = client.post("/api/system/restore", json={"backupVersion": "1.0", "contexts": "not-a-list"})
+            bad_restore = client.post("/api/system/restore", headers={"X-Pilot-Pin": "test-pin"}, json={"backupVersion": "1.0", "contexts": "not-a-list"})
             assert bad_restore.status_code == 400
     finally:
-        import os
+
         from backend.app.models import CurriculumSource, ExportTask
         db = SessionLocal()
         try:

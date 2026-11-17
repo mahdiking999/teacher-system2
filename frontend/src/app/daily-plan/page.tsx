@@ -33,7 +33,7 @@ function DailyPlanContent() {
   const searchParams = useSearchParams();
   const urlPlanId = searchParams.get("planId") || "";
 
-  const { activeContext, activeContextId, apiFetch } = useTeacherApp();
+  const { activeContext, activeContextId, apiFetch, downloadFile } = useTeacherApp();
   const [plans, setPlans] = useState<any[]>([]);
   const [lessons, setLessons] = useState<any[]>([]);
   const [templates, setTemplates] = useState<any[]>([]);
@@ -387,7 +387,7 @@ function DailyPlanContent() {
         }),
       });
       setLastExportLink({ url: res.downloadUrl, fileName: res.fileName });
-      window.open(res.downloadUrl, "_blank");
+      await downloadFile(res.downloadUrl, res.fileName);
       setFeedback(`تم توليد ملف ${fmt.toUpperCase()} الحقيقي (${res.fileName}) بنجاح.`);
     } catch (err: any) {
       setErrorMsg(err?.message || "تعذر توليد الملف.");

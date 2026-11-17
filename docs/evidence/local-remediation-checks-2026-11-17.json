@@ -1,0 +1,81 @@
+{
+  "runId": "local-remediation-checks-2026-11-17",
+  "executedAt": "2026-11-17",
+  "environment": {
+    "os": "Windows",
+    "branch": "main",
+    "commit": "8a3f99604bbb9c4df359a5043db6883c1c78d1bb",
+    "database": "temporary isolated SQLite via backend/tests/conftest.py",
+    "deployedRequests": 0
+  },
+  "checks": [
+    {
+      "name": "backend-tests",
+      "command": ".\\.venv\\Scripts\\python.exe -m pytest backend\\tests -q",
+      "exitCode": 0,
+      "passed": 31,
+      "failed": 0,
+      "warnings": 3,
+      "result": "passed",
+      "additionalCoverage": "Health response is asserted minimal; API returns 503 PILOT_PIN_NOT_CONFIGURED when the shared PIN is unset."
+    },
+    {
+      "name": "frontend-typescript",
+      "command": ".\\node_modules\\.bin\\tsc.cmd --noEmit",
+      "workingDirectory": "frontend",
+      "exitCode": 0,
+      "result": "passed"
+    },
+    {
+      "name": "frontend-production-build",
+      "command": "npm run build",
+      "workingDirectory": "frontend",
+      "exitCode": 0,
+      "generatedAppRoutes": 13,
+      "result": "passed",
+      "note": "Next.js skips type validation; standalone TypeScript check also passed."
+    },
+    {
+      "name": "backend-compileall",
+      "command": ".\\.venv\\Scripts\\python.exe -m compileall -q backend\\app backend\\tests",
+      "exitCode": 0,
+      "result": "passed"
+    },
+    {
+      "name": "git-diff-check",
+      "command": "git diff --check",
+      "exitCode": 0,
+      "result": "passed",
+      "note": "Git emitted LF-to-CRLF working-copy warnings."
+    },
+    {
+      "name": "credential-pattern-scan",
+      "command": "Redacted Python scan of current source/config/docs plus git log -G scan; pattern values are never printed.",
+      "exitCode": 0,
+      "scannedCurrentFiles": 57,
+      "currentMatches": 0,
+      "historicalMatchingCommits": [
+        "7bd209a21512cd8e2c9675e96390bc376499d7df"
+      ],
+      "result": "current tree clear; historical exposure remains"
+    }
+  ],
+  "tooling": {
+    "docker": "unavailable",
+    "psql": "unavailable",
+    "pg_isready": "unavailable",
+    "renderCli": "unavailable",
+    "githubCli": "unavailable",
+    "ruff": "unavailable",
+    "frontendLintOrTypecheckNpmScripts": "not configured",
+    "playwrightDependency": "not configured"
+  },
+  "notRun": [
+    "PostgreSQL runtime integration and backup/restore validation",
+    "Playwright/browser journeys across all 13 routes",
+    "Render configuration, health, PIN enforcement, and reported HTTP 503 investigation",
+    "External credential revocation/rotation verification",
+    "Deployment or production mutations"
+  ],
+  "deploymentOutcome": "not deployed; prerequisites and authorized external access unverified"
+}

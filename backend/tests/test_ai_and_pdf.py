@@ -40,7 +40,7 @@ def test_pymupdf_real_extraction_and_png_rendering():
 
 def test_ai_endpoints_and_source_extraction_pipeline(monkeypatch):
     monkeypatch.setenv("ENABLE_DEMO_SEED", "0")
-    monkeypatch.delenv("PILOT_ACCESS_PIN", raising=False)
+    monkeypatch.setenv("PILOT_ACCESS_PIN", "test-pin")
     # Force fast deterministic fallback inside unit test so test never depends on external network latency
     monkeypatch.setenv("OMNIROUTE_BASE_URL", "")
     monkeypatch.delenv("NVIDIA_API_KEYS", raising=False)
@@ -49,11 +49,15 @@ def test_ai_endpoints_and_source_extraction_pipeline(monkeypatch):
     created_ctx_id = None
     uploaded_file_path = None
     try:
-        with TestClient(app) as client:
+        with TestClient(app, headers={"X-Pilot-Pin": "test-pin"}) as client:
             status_res = client.get("/api/ai/status")
             assert status_res.status_code == 200
-            assert "nv-nemotron-3-5-bolt-e4b" in status_res.json()["textModels"]
-            assert "nv-nemotron-3-5-super-vl-120b" in status_res.json()["visionModels"]
+            assert status_res.json() == {
+                "available": False,
+                "textGenerationReady": False,
+                "visionGenerationReady": False,
+                "fallbackAvailable": True,
+            }
 
             ctx_res = client.post(
                 "/api/contexts",

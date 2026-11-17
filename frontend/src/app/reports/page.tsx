@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useTeacherApp, WorkflowStepper } from "../../components/AppShell";
 
 export default function ReportsPage() {
-  const { activeContext, activeContextId, apiFetch } = useTeacherApp();
+  const { activeContext, activeContextId, apiFetch, downloadFile } = useTeacherApp();
   const [dateFrom, setDateFrom] = useState<string>("");
   const [dateTo, setDateTo] = useState<string>("");
   const [planTypeFilter, setPlanTypeFilter] = useState<string>("all");
@@ -84,7 +84,7 @@ export default function ReportsPage() {
         }),
       });
       setLastExportLink({ url: res.downloadUrl, fileName: res.fileName });
-      window.open(res.downloadUrl, "_blank");
+      await downloadFile(res.downloadUrl, res.fileName);
       setFeedback(`تم توليد وتنزيل التقرير بصيغة ${fmt === "report_pdf" ? "PDF" : "DOCX"} بنجاح.`);
       await loadReport(dateFrom, dateTo, planTypeFilter);
     } catch (err: any) {

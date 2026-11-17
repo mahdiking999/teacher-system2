@@ -6,10 +6,6 @@ import zipfile
 import xml.etree.ElementTree as ET
 import pytest
 
-# Ensure isolated SQLite test database
-os.environ["DATABASE_URL"] = "sqlite:///./test_journey_isolated.db"
-os.environ["ENABLE_DEMO_SEED"] = "0"
-
 from backend.app.database import Base, engine, SessionLocal
 from backend.app.models import EducationalContext, Plan, Lesson, Chapter, CurriculumSource, ExportTask
 from backend.app.schemas import (

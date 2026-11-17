@@ -18,7 +18,7 @@ function formatPlanStatusBadgeClass(status?: string) {
 }
 
 export default function DashboardPage() {
-  const { activeContext, activeContextId, apiFetch } = useTeacherApp();
+  const { activeContext, activeContextId, apiFetch, downloadFile } = useTeacherApp();
   const [summary, setSummary] = useState<any>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string>("");
@@ -397,13 +397,14 @@ export default function DashboardPage() {
                       الإصدار v{ex.planVersion} · {(ex.fileSize / 1024).toFixed(1)} KB
                     </div>
                   </div>
-                  <a
-                    href={`/api/exports/${ex.id}/download?contextId=${encodeURIComponent(activeContextId)}`}
+                  <button
+                    type="button"
+                    onClick={() => downloadFile(`/api/exports/${ex.id}/download?contextId=${encodeURIComponent(activeContextId)}`, ex.fileName)}
                     className="badge badge-success"
-                    style={{ textDecoration: "none" }}
+                    style={{ textDecoration: "none", border: 0, cursor: "pointer" }}
                   >
                     تنزيل
-                  </a>
+                  </button>
                 </div>
               ))}
             </div>

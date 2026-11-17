@@ -16,7 +16,7 @@ function ExportPackageContent() {
   const searchParams = useSearchParams();
   const urlPlanId = searchParams.get("planId") || "";
 
-  const { activeContext, activeContextId, apiFetch } = useTeacherApp();
+  const { activeContext, activeContextId, apiFetch, downloadFile } = useTeacherApp();
   const [plans, setPlans] = useState<any[]>([]);
   const [sources, setSources] = useState<any[]>([]);
   const [exportsList, setExportsList] = useState<any[]>([]);
@@ -148,7 +148,7 @@ function ExportPackageContent() {
           16
         )}...).`
       );
-      window.open(created.downloadUrl, "_blank");
+      await downloadFile(created.downloadUrl, created.fileName);
       await loadData();
     } catch (err: any) {
       setErrorMsg(err?.message || "تعذر توليد الملف المطلوب.");
@@ -187,9 +187,9 @@ function ExportPackageContent() {
         <div className="info-banner" style={{ borderColor: "var(--primary-green)", color: "var(--primary-green)" }}>
           <span>✓ {feedback}</span>
           {lastExportLink && (
-            <a href={lastExportLink.url} className="btn btn-secondary" style={{ padding: "4px 10px", fontSize: "0.78rem" }}>
+            <button type="button" onClick={() => downloadFile(lastExportLink.url, lastExportLink.fileName)} className="btn btn-secondary" style={{ padding: "4px 10px", fontSize: "0.78rem" }}>
               تنزيل {lastExportLink.fileName}
-            </a>
+            </button>
           )}
         </div>
       )}
@@ -404,13 +404,14 @@ function ExportPackageContent() {
                       </span>
                     </td>
                     <td>
-                      <a
-                        href={`/api/exports/${ex.id}/download?contextId=${encodeURIComponent(activeContextId)}`}
+                      <button
+                        type="button"
+                        onClick={() => downloadFile(`/api/exports/${ex.id}/download?contextId=${encodeURIComponent(activeContextId)}`, ex.fileName)}
                         className="btn btn-secondary"
                         style={{ padding: "5px 12px", fontSize: "0.78rem" }}
                       >
                         تنزيل الملف الفعلي
-                      </a>
+                      </button>
                     </td>
                   </tr>
                 ))
