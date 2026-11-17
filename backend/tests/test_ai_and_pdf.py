@@ -54,6 +54,8 @@ def test_ai_endpoints_and_source_extraction_pipeline(monkeypatch):
             assert status_res.status_code == 200
             assert status_res.json() == {
                 "available": False,
+                "configured": False,
+                "mode": "fallback",
                 "textGenerationReady": False,
                 "visionGenerationReady": False,
                 "fallbackAvailable": True,

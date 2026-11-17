@@ -33,7 +33,7 @@ function DailyPlanContent() {
   const searchParams = useSearchParams();
   const urlPlanId = searchParams.get("planId") || "";
 
-  const { activeContext, activeContextId, apiFetch, downloadFile } = useTeacherApp();
+  const { activeContext, activeContextId, apiFetch, downloadFile, aiStatus } = useTeacherApp();
   const [plans, setPlans] = useState<any[]>([]);
   const [lessons, setLessons] = useState<any[]>([]);
   const [templates, setTemplates] = useState<any[]>([]);
@@ -48,6 +48,7 @@ function DailyPlanContent() {
   const [exportingFmt, setExportingFmt] = useState<string>("");
   const [aiDrafting, setAiDrafting] = useState<boolean>(false);
   const [aiPrompt, setAiPrompt] = useState<string>("");
+  const [aiModelUsed, setAiModelUsed] = useState<string>("");
 
   // Inline template save UI (replaces browser prompt)
   const [showTplModal, setShowTplModal] = useState<boolean>(false);
@@ -64,6 +65,10 @@ function DailyPlanContent() {
   const [periodMinutes, setPeriodMinutes] = useState<number>(45);
   const [objectivesText, setObjectivesText] = useState<string>("");
   const [priorKnowledge, setPriorKnowledge] = useState<string>("");
+  const [teacherRole, setTeacherRole] = useState<string>("");
+  const [studentRole, setStudentRole] = useState<string>("");
+  const [referencesNote, setReferencesNote] = useState<string>("");
+  const [showRolesSection, setShowRolesSection] = useState<boolean>(false);
   const [phases, setPhases] = useState<any[]>([]);
   const [formativeAssessment, setFormativeAssessment] = useState<string>("");
   const [differentiation, setDifferentiation] = useState<string>("");
@@ -91,6 +96,10 @@ function DailyPlanContent() {
           : lList[0]?.objectives?.join("\n") || ""
       );
       setPriorKnowledge(lList[0]?.priorKnowledge || "");
+      setTeacherRole("");
+      setStudentRole("");
+      setReferencesNote("");
+      setAiModelUsed("");
       setPhases(tList[0]?.phases ? JSON.parse(JSON.stringify(tList[0].phases)) : []);
       setFormativeAssessment("");
       setDifferentiation("");
@@ -115,6 +124,9 @@ function DailyPlanContent() {
     setPeriodMinutes(pln.periodMinutes || 45);
     setObjectivesText((pln.objectives || []).join("\n"));
     setPriorKnowledge(pln.priorKnowledge || "");
+    setTeacherRole(pln.teacherRole || "");
+    setStudentRole(pln.studentRole || "");
+    setReferencesNote(pln.referencesNote || "");
     setPhases(pln.phases || []);
     setFormativeAssessment(pln.formativeAssessment || "");
     setDifferentiation(pln.differentiation || "");
@@ -189,6 +201,7 @@ function DailyPlanContent() {
     setFeedback("");
     setErrorMsg("");
     setAiPrompt("");
+    setAiModelUsed("");
     setLastExportLink(null);
     setShowTplModal(false);
     setSelectedPlanId("");
@@ -273,15 +286,15 @@ function DailyPlanContent() {
         .map((s) => s.trim())
         .filter(Boolean),
       priorKnowledge,
-      teacherRole: currentPlan?.teacherRole || "",
-      studentRole: currentPlan?.studentRole || "",
+      teacherRole,
+      studentRole,
       teachingTools: activeContext?.selectedTools || ["سبورة", "أقلام ملوّنة"],
       phases,
       formativeAssessment,
       differentiation,
       homework,
       homeEnrichmentMinutes: Number(homeEnrichmentMinutes) || 0,
-      referencesNote: currentPlan?.referencesNote || "",
+      referencesNote,
       planningNotes,
       subjectItems,
       scheduleDays: [],
@@ -358,8 +371,13 @@ function DailyPlanContent() {
       } else {
         await loadData(targetPlanId);
       }
+      const rawModel = String(res?.modelUsed || "");
+      const isFallback = !rawModel || rawModel === "deterministic_fallback";
+      setAiModelUsed(isFallback ? "deterministic_fallback" : rawModel);
       setFeedback(
-        `تمت صياغة الخطة اليومية والأنشطة والتقويم بالذكاء الاصطناعي بنجاح عبر (${res?.modelUsed || "NVIDIA NIM"}). راجع الحقول وعدّلها قبل الاعتماد.`
+        isFallback
+          ? "تم توليد مسودة الخطة عبر القوالب المنهجية الاحتياطية (توليد منهجي احتياطي) لعدم توفر اتصال حي ببوابة الذكاء الاصطناعي حاليًا. راجع الحقول وعدّلها قبل الاعتماد."
+          : `تمت صياغة الخطة اليومية والأنشطة والتقويم بالذكاء الاصطناعي بنجاح عبر (${rawModel}). راجع الحقول وعدّلها قبل الاعتماد.`
       );
     } catch (err: any) {
       setErrorMsg(err?.message || "خطأ أثناء التوليد بالذكاء الاصطناعي.");
@@ -515,6 +533,7 @@ function DailyPlanContent() {
                 const found = plans.find((p) => p.id === e.target.value);
                 if (found) {
                   bindPlanToForm(found);
+                  setAiModelUsed("");
                   setFeedback("");
                   setErrorMsg("");
                 }
@@ -534,13 +553,32 @@ function DailyPlanContent() {
       {/* Compact AI Plan Drafting Bar */}
       <div className="card" style={{ padding: "14px 18px", borderColor: "rgba(23, 107, 82, 0.28)", backgroundColor: "#fcfefd" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "8px" }}>
-          <strong style={{ fontSize: "0.95rem", fontWeight: 800 }}>
-            ✨ صياغة الخطة والأنشطة بالذكاء الاصطناعي (NVIDIA NIM)
-          </strong>
+          <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+            <strong style={{ fontSize: "0.95rem", fontWeight: 800 }}>
+              ✨ صياغة الخطة والأنشطة الذكية
+            </strong>
+            <span className={`badge ${aiStatus.loading ? "badge-neutral" : aiStatus.mode === "live" ? "badge-success" : "badge-warning"}`}>
+              {aiStatus.loading
+                ? "جارٍ فحص بوابة الذكاء الاصطناعي..."
+                : aiStatus.mode === "live"
+                ? `متصل بالذكاء الاصطناعي الحي (${aiStatus.model})`
+                : "وضع احتياطي محلي (بدون بوابة ذكاء اصطناعي)"}
+            </span>
+            {aiModelUsed && (
+              <span className={`badge ${aiModelUsed === "deterministic_fallback" ? "badge-warning" : "badge-success"}`}>
+                {aiModelUsed === "deterministic_fallback" ? "توليد منهجي احتياطي" : `توليد بالذكاء الاصطناعي (${aiModelUsed})`}
+              </span>
+            )}
+          </div>
           <span style={{ fontSize: "0.76rem", color: "var(--text-secondary)" }}>
             يملأ الأهداف والتمهيد ومراحل سير الحصة والتقويم والواجب تلقائيًا
           </span>
         </div>
+        {!aiStatus.loading && aiStatus.mode === "fallback" && (
+          <div style={{ fontSize: "0.78rem", color: "var(--warning-text)", marginBottom: "8px" }}>
+            ملاحظة: بوابة الذكاء الاصطناعي غير مهيأة حاليًا؛ سيُنشئ هذا الخيار مسودة قوالب منهجية احتياطية قابلة للتحرير.
+          </div>
+        )}
         <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
           <input
             type="text"
@@ -559,8 +597,12 @@ function DailyPlanContent() {
             onClick={handleAiGeneratePlan}
           >
             {aiDrafting
-              ? "جارٍ صياغة الخطة عبر NVIDIA NIM..."
-              : "✨ صياغة الخطة والأنشطة بالذكاء الاصطناعي"}
+              ? aiStatus.mode === "live"
+                ? "جارٍ صياغة الخطة بالذكاء الاصطناعي..."
+                : "جارٍ توليد المسودة المنهجية..."
+              : aiStatus.mode === "live"
+              ? "✨ صياغة الخطة والأنشطة بالذكاء الاصطناعي"
+              : "✨ توليد مسودة منهجية احتياطية"}
           </button>
         </div>
       </div>
@@ -575,9 +617,20 @@ function DailyPlanContent() {
         <div className="info-banner" style={{ borderColor: "var(--primary-green)", color: "var(--primary-green)" }}>
           <span>✓ {feedback}</span>
           {lastExportLink && (
-            <a href={lastExportLink.url} className="btn btn-secondary" style={{ padding: "4px 10px", fontSize: "0.78rem" }}>
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await downloadFile(lastExportLink.url, lastExportLink.fileName);
+                } catch (err: any) {
+                  setErrorMsg(err?.message || "تعذر تنزيل الملف.");
+                }
+              }}
+              className="btn btn-secondary"
+              style={{ padding: "4px 10px", fontSize: "0.78rem" }}
+            >
               تنزيل {lastExportLink.fileName}
-            </a>
+            </button>
           )}
         </div>
       )}
@@ -1027,7 +1080,7 @@ function DailyPlanContent() {
                 />
               </div>
 
-              <div className="form-group" style={{ marginBottom: subjectItems.length > 0 ? "14px" : 0 }}>
+              <div className="form-group" style={{ marginBottom: "14px" }}>
                 <label className="form-label">ملاحظات التخطيط والنتائج المدرجة من الأدوات التخصصية</label>
                 <textarea
                   className="form-textarea"
@@ -1035,6 +1088,61 @@ function DailyPlanContent() {
                   value={planningNotes}
                   onChange={(e) => setPlanningNotes(e.target.value)}
                 />
+              </div>
+
+              <div style={{ paddingTop: "10px", borderTop: "1px solid var(--border-subtle)", marginBottom: subjectItems.length > 0 ? "14px" : 0 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px" }}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary"
+                    style={{ padding: "5px 12px", fontSize: "0.8rem" }}
+                    onClick={() => setShowRolesSection((prev) => !prev)}
+                  >
+                    {showRolesSection ? "▲ إخفاء الأدوار والمراجع (اختياري)" : "▼ تحرير أدوار المعلم والطالب والمراجع (اختياري)"}
+                  </button>
+                  {(teacherRole.trim() || studentRole.trim() || referencesNote.trim()) && (
+                    <span className="badge badge-success">حقول الأدوار/المراجع مُعبّأة</span>
+                  )}
+                </div>
+
+                {showRolesSection && (
+                  <div style={{ marginTop: "12px", display: "flex", flexDirection: "column", gap: "10px" }}>
+                    <div className="equal-split-grid">
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label htmlFor="daily-teacher-role" className="form-label">دور المعلم العام (teacherRole)</label>
+                        <textarea
+                          id="daily-teacher-role"
+                          className="form-textarea"
+                          style={{ minHeight: "64px" }}
+                          placeholder="مثال: التهيئة والنمذجة وإدارة النقاش الصفي وتقديم التغذية الراجعة..."
+                          value={teacherRole}
+                          onChange={(e) => setTeacherRole(e.target.value)}
+                        />
+                      </div>
+                      <div className="form-group" style={{ marginBottom: 0 }}>
+                        <label htmlFor="daily-student-role" className="form-label">دور الطالب العام (studentRole)</label>
+                        <textarea
+                          id="daily-student-role"
+                          className="form-textarea"
+                          style={{ minHeight: "64px" }}
+                          placeholder="مثال: المشاركة النشطة في الاستكشاف والتدريب وتبرير الاستنتاجات..."
+                          value={studentRole}
+                          onChange={(e) => setStudentRole(e.target.value)}
+                        />
+                      </div>
+                    </div>
+                    <div className="form-group" style={{ marginBottom: 0 }}>
+                      <label htmlFor="daily-references-note" className="form-label">ملاحظات المراجع والمصادر (referencesNote)</label>
+                      <input
+                        id="daily-references-note"
+                        className="form-input"
+                        placeholder="أرقام صفحات الكتاب، الدليل التربوي، أو مراجع إضافية للمعلم..."
+                        value={referencesNote}
+                        onChange={(e) => setReferencesNote(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               {subjectItems.length > 0 && (

@@ -59,8 +59,8 @@ from .schemas import (
     AIPlanGenerateRequest,
     AISourceExtractRequest,
 )
-from .services.audit_service import audit_plan_and_context, run_subject_tool
-from .services.pdf_service import inspect_and_extract_pdf, render_pdf_page_to_png_bytes
+from .services.audit_service import audit_plan_and_context, run_subject_tool, VALID_SUBJECT_TOOLS
+from .services.pdf_service import inspect_and_extract_pdf, render_pdf_page_to_png_bytes, detect_ocr_ambiguities
 from .services.ai_service import (
     get_ai_status,
     generate_slides_with_ai,
@@ -231,6 +231,27 @@ def verify_active_context_guard(
                 "activeContextId": header_active_context_id,
             },
         )
+
+
+def _assert_active_context_header(
+    target_context_id: str,
+    header_active_context_id: Optional[str],
+):
+    """
+    Prevents delayed/stale GET reads from returning data from a context that mismatches
+    an explicitly supplied X-Active-Context-Id header, while allowing omitted headers.
+    """
+    if isinstance(header_active_context_id, str) and header_active_context_id.strip():
+        if header_active_context_id.strip() != target_context_id.strip():
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "STALE_CONTEXT_READ_BLOCKED",
+                    "message": "تم رفض القراءة: الترويسة النشطة لا تطابق سياق المورد المطلوب.",
+                    "resourceContextId": target_context_id,
+                    "activeContextId": header_active_context_id,
+                },
+            )
 
 
 def serialize_context(ctx: EducationalContext) -> dict:
@@ -470,7 +491,12 @@ def create_context(payload: EducationalContextCreate, db: Session = Depends(get_
 
 
 @app.get("/api/contexts/{context_id}")
-def get_context(context_id: str, db: Session = Depends(get_db)):
+def get_context(
+    context_id: str,
+    x_active_context_id: Optional[str] = Header(default=None, alias="X-Active-Context-Id"),
+    db: Session = Depends(get_db),
+):
+    _assert_active_context_header(context_id, x_active_context_id)
     ctx = db.query(EducationalContext).filter(EducationalContext.id == context_id).first()
     if not ctx:
         raise HTTPException(status_code=404, detail={"code": "CONTEXT_NOT_FOUND", "message": "السياق التعليمي غير موجود."})
@@ -532,7 +558,12 @@ def update_context(
 # ==============================================================================
 
 @app.get("/api/templates")
-def list_templates(contextId: str = Query(...), db: Session = Depends(get_db)):
+def list_templates(
+    contextId: str = Query(...),
+    x_active_context_id: Optional[str] = Header(default=None, alias="X-Active-Context-Id"),
+    db: Session = Depends(get_db),
+):
+    _assert_active_context_header(contextId, x_active_context_id)
     templates = (
         db.query(PhaseTemplate)
         .filter(PhaseTemplate.context_id == contextId)
@@ -598,7 +629,12 @@ def create_template(
 # ==============================================================================
 
 @app.get("/api/sources")
-def list_sources(contextId: str = Query(...), db: Session = Depends(get_db)):
+def list_sources(
+    contextId: str = Query(...),
+    x_active_context_id: Optional[str] = Header(default=None, alias="X-Active-Context-Id"),
+    db: Session = Depends(get_db),
+):
+    _assert_active_context_header(contextId, x_active_context_id)
     sources = (
         db.query(CurriculumSource)
         .filter(CurriculumSource.context_id == contextId)
@@ -634,7 +670,15 @@ async def upload_source_pdf(
     try:
         inspection = inspect_and_extract_pdf(file_bytes, safe_filename)
     except ValueError as ve:
-        raise HTTPException(status_code=400, detail={"code": "INVALID_PDF_FILE", "message": str(ve)})
+        err_msg = str(ve)
+        if "توقيع الملف" in err_msg or "حجم الملف" in err_msg or "عدد صفحات" in err_msg:
+            raise HTTPException(status_code=400, detail={"code": "INVALID_PDF_FILE", "message": err_msg})
+        raise HTTPException(status_code=422, detail={"code": "CORRUPT_PDF", "message": err_msg})
+    if not inspection.get("pages") or int(inspection.get("pageCount") or 0) <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "CORRUPT_PDF", "message": "تعذر استخراج صفحات صالحة من ملف PDF المرفوع."},
+        )
 
     stored_name = f"{contextId}_{uuid.uuid4().hex[:8]}_{safe_filename}"
     stored_path = os.path.join(UPLOADS_DIR, stored_name)
@@ -796,6 +840,57 @@ def update_source_page_text(
     }
 
 
+@app.get("/api/sources/{source_id}/pages/{page_id}/image")
+def get_source_page_image(
+    source_id: str,
+    page_id: str,
+    contextId: Optional[str] = Query(default=None),
+    dpi: int = Query(default=150, ge=72, le=300),
+    x_active_context_id: Optional[str] = Header(default=None, alias="X-Active-Context-Id"),
+    db: Session = Depends(get_db),
+):
+    if contextId is not None and contextId.strip():
+        _assert_active_context_header(contextId, x_active_context_id)
+        src = (
+            db.query(CurriculumSource)
+            .filter(CurriculumSource.id == source_id, CurriculumSource.context_id == contextId.strip())
+            .first()
+        )
+    else:
+        src = db.query(CurriculumSource).filter(CurriculumSource.id == source_id).first()
+        if src:
+            _assert_active_context_header(src.context_id, x_active_context_id)
+    if not src:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "SOURCE_NOT_FOUND", "message": "المصدر غير موجود ضمن هذا السياق."},
+        )
+
+    pg = db.query(SourcePage).filter(SourcePage.id == page_id, SourcePage.source_id == src.id).first()
+    if not pg:
+        raise HTTPException(status_code=404, detail={"code": "PAGE_NOT_FOUND", "message": "الصفحة غير موجودة."})
+
+    if not src.file_path or not os.path.isfile(src.file_path):
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "SOURCE_FILE_NOT_FOUND", "message": "ملف PDF للمصدر غير متوفر على الخادم."},
+        )
+
+    with open(src.file_path, "rb") as f_pdf:
+        png_bytes = render_pdf_page_to_png_bytes(f_pdf.read(), pg.pdf_page_number, dpi=dpi)
+    if not png_bytes:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "PAGE_IMAGE_RENDER_FAILED", "message": "تعذر تصيير صورة هذه الصفحة."},
+        )
+
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"Cache-Control": "private, max-age=300"},
+    )
+
+
 @app.post("/api/chapters", status_code=201)
 def create_chapter(
     payload: ChapterCreate,
@@ -847,7 +942,13 @@ def create_chapter(
 # ==============================================================================
 
 @app.get("/api/lessons")
-def list_lessons(contextId: str = Query(...), q: Optional[str] = Query(default=None), db: Session = Depends(get_db)):
+def list_lessons(
+    contextId: str = Query(...),
+    q: Optional[str] = Query(default=None),
+    x_active_context_id: Optional[str] = Header(default=None, alias="X-Active-Context-Id"),
+    db: Session = Depends(get_db),
+):
+    _assert_active_context_header(contextId, x_active_context_id)
     query = db.query(Lesson).filter(Lesson.context_id == contextId)
     if q and q.strip():
         query = query.filter(Lesson.title.ilike(f"%{q.strip()}%"))
@@ -1026,15 +1127,35 @@ def execute_subject_tool(
     db: Session = Depends(get_db),
 ):
     verify_active_context_guard(payload.contextId, x_active_context_id)
+    normalized_tool = (payload.toolType or "").strip()
+    if normalized_tool not in VALID_SUBJECT_TOOLS:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "UNKNOWN_TOOL_TYPE",
+                "message": f"نوع الأداة التخصصية غير مدعوم: {payload.toolType}",
+                "allowedToolTypes": sorted(VALID_SUBJECT_TOOLS),
+            },
+        )
     ctx = db.query(EducationalContext).filter(EducationalContext.id == payload.contextId).first()
     if not ctx:
         raise HTTPException(status_code=404, detail={"code": "CONTEXT_NOT_FOUND", "message": "السياق غير موجود."})
-    result = run_subject_tool(
-        subject=ctx.subject,
-        tool_type=payload.toolType,
-        title=payload.title,
-        inputs=payload.inputs,
-    )
+    try:
+        result = run_subject_tool(
+            subject=ctx.subject,
+            tool_type=normalized_tool,
+            title=payload.title,
+            inputs=payload.inputs,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "UNKNOWN_TOOL_TYPE",
+                "message": str(exc),
+                "allowedToolTypes": sorted(VALID_SUBJECT_TOOLS),
+            },
+        )
     return result
 
 
@@ -1066,6 +1187,7 @@ def _save_plan_version_and_review(db: Session, pln: Plan, ctx: EducationalContex
         "lessonsCount": pln.lessons_count,
         "periodsCount": pln.periods_count,
         "periodMinutes": pln.period_minutes,
+        "totalAllocatedMinutes": pln.total_allocated_minutes,
         "objectives": pln.objectives,
         "priorKnowledge": pln.prior_knowledge,
         "teacherRole": pln.teacher_role,
@@ -1075,6 +1197,9 @@ def _save_plan_version_and_review(db: Session, pln: Plan, ctx: EducationalContex
         "formativeAssessment": pln.formative_assessment,
         "differentiation": pln.differentiation,
         "homework": pln.homework,
+        "homeEnrichmentMinutes": pln.home_enrichment_minutes,
+        "referencesNote": pln.references_note,
+        "planningNotes": pln.planning_notes,
         "subjectItems": pln.subject_items,
         "scheduleDays": pln.schedule_days,
         "slides": pln.slides,
@@ -1143,8 +1268,10 @@ def _save_plan_version_and_review(db: Session, pln: Plan, ctx: EducationalContex
 def list_plans(
     contextId: str = Query(...),
     planType: Optional[str] = Query(default=None),
+    x_active_context_id: Optional[str] = Header(default=None, alias="X-Active-Context-Id"),
     db: Session = Depends(get_db),
 ):
+    _assert_active_context_header(contextId, x_active_context_id)
     query = db.query(Plan).filter(Plan.context_id == contextId)
     if planType and planType.strip():
         query = query.filter(Plan.plan_type == planType.strip())
@@ -1153,7 +1280,13 @@ def list_plans(
 
 
 @app.get("/api/plans/{plan_id}")
-def get_plan(plan_id: str, contextId: str = Query(...), db: Session = Depends(get_db)):
+def get_plan(
+    plan_id: str,
+    contextId: str = Query(...),
+    x_active_context_id: Optional[str] = Header(default=None, alias="X-Active-Context-Id"),
+    db: Session = Depends(get_db),
+):
+    _assert_active_context_header(contextId, x_active_context_id)
     pln = db.query(Plan).filter(Plan.id == plan_id, Plan.context_id == contextId).first()
     if not pln:
         raise HTTPException(
@@ -1455,6 +1588,64 @@ def approve_plan_version(
     return serialize_plan(pln)
 
 
+def _rescale_phases_minutes(phases: list, target_total_minutes: int) -> list:
+    """
+    Proportionally rescales in-class phase durations so their sum equals
+    `target_total_minutes` while leaving home-enrichment phases untouched.
+    """
+    copied_phases = [dict(ph) if isinstance(ph, dict) else ph for ph in (phases or [])]
+    in_class = [p for p in copied_phases if isinstance(p, dict) and not p.get("isHomeEnrichment", False)]
+    if not in_class or target_total_minutes <= 0:
+        return copied_phases
+
+    parsed_mins = []
+    for p in in_class:
+        try:
+            m = int(float(p.get("minutes") if p.get("minutes") is not None else 0))
+        except (ValueError, TypeError):
+            return copied_phases
+        if m < 0:
+            return copied_phases
+        parsed_mins.append(m)
+
+    orig_sum = sum(parsed_mins)
+    if orig_sum <= 0 or orig_sum == target_total_minutes:
+        return copied_phases
+
+    n_phases = len(in_class)
+    min_per_positive = 1 if target_total_minutes >= n_phases else 0
+    for p, orig_m in zip(in_class, parsed_mins):
+        scaled = round((orig_m / orig_sum) * target_total_minutes)
+        p["minutes"] = max(min_per_positive if orig_m > 0 else 0, scaled)
+
+    delta = target_total_minutes - sum(p["minutes"] for p in in_class)
+    if delta != 0:
+        ordered = sorted(
+            zip(in_class, parsed_mins),
+            key=lambda pair: pair[0]["minutes"],
+            reverse=True,
+        )
+        guard = 0
+        while delta != 0 and guard < 500:
+            changed = False
+            for p, orig_m in ordered:
+                if delta == 0:
+                    break
+                floor_min = min_per_positive if orig_m > 0 else 0
+                if delta > 0:
+                    p["minutes"] += 1
+                    delta -= 1
+                    changed = True
+                elif p["minutes"] > floor_min:
+                    p["minutes"] -= 1
+                    delta += 1
+                    changed = True
+            if not changed:
+                break
+            guard += 1
+    return copied_phases
+
+
 @app.post("/api/plans/{plan_id}/copy-to-context", status_code=201)
 def copy_plan_to_another_context(
     plan_id: str,
@@ -1467,6 +1658,7 @@ def copy_plan_to_another_context(
     - Creates a brand new Plan record in `targetContextId` with version=1
     - Clears previous approval (`status='draft'`, `approved_version=None`)
     - Unlinks the previous context's `source_id` and `lesson_ids`
+    - Proportionally rescales phase/schedule minutes to target context's `default_period_Minutes`
     - Captures the target context's `context_snapshot` and re-runs specialized audit!
     """
     verify_active_context_guard(payload.sourceContextId, x_active_context_id)
@@ -1477,6 +1669,39 @@ def copy_plan_to_another_context(
     target_ctx = db.query(EducationalContext).filter(EducationalContext.id == payload.targetContextId).first()
     if not target_ctx:
         raise HTTPException(status_code=404, detail={"code": "TARGET_CONTEXT_NOT_FOUND", "message": "السياق الهدف غير موجود."})
+
+    target_period_minutes = target_ctx.default_period_Minutes or orig.period_minutes
+    target_total_class_minutes = orig.periods_count * target_period_minutes
+
+    if orig.plan_type == "daily":
+        copied_phases = _rescale_phases_minutes(orig.phases or [], target_total_class_minutes)
+    else:
+        copied_phases = [dict(ph) if isinstance(ph, dict) else ph for ph in (orig.phases or [])]
+
+    copied_schedule_days = [dict(d) if isinstance(d, dict) else d for d in (orig.schedule_days or [])]
+    if orig.plan_type != "daily" and copied_schedule_days and target_period_minutes != orig.period_minutes:
+        orig_pm = max(1, int(orig.period_minutes or 45))
+        for d in copied_schedule_days:
+            if not isinstance(d, dict) or d.get("isHoliday"):
+                continue
+            if "minutes" in d and d.get("minutes") is not None:
+                try:
+                    dm = int(float(d["minutes"]))
+                    if dm > 0:
+                        d["minutes"] = max(1, round((dm / orig_pm) * target_period_minutes))
+                except (ValueError, TypeError):
+                    pass
+            if "durationMinutes" in d and d.get("durationMinutes") is not None:
+                try:
+                    dm = int(float(d["durationMinutes"]))
+                    if dm > 0:
+                        d["durationMinutes"] = max(1, round((dm / orig_pm) * target_period_minutes))
+                except (ValueError, TypeError):
+                    pass
+
+    new_total_allocated = _compute_total_allocated_minutes(
+        orig.plan_type, orig.periods_count, target_period_minutes, copied_schedule_days
+    )
 
     copied = Plan(
         context_id=target_ctx.id,
@@ -1493,14 +1718,14 @@ def copy_plan_to_another_context(
         planning_date=target_ctx.planning_date or orig.planning_date,
         lessons_count=orig.lessons_count,
         periods_count=orig.periods_count,
-        period_minutes=target_ctx.default_period_Minutes or orig.period_minutes,
-        total_allocated_minutes=orig.periods_count * (target_ctx.default_period_Minutes or orig.period_minutes),
+        period_minutes=target_period_minutes,
+        total_allocated_minutes=new_total_allocated,
         objectives=list(orig.objectives or []),
         prior_knowledge=orig.prior_knowledge,
         teacher_role=orig.teacher_role,
         student_role=orig.student_role,
         teaching_tools=list(orig.teaching_tools or []),
-        phases=list(orig.phases or []),
+        phases=copied_phases,
         formative_assessment=orig.formative_assessment,
         differentiation=orig.differentiation,
         homework=orig.homework,
@@ -1508,7 +1733,7 @@ def copy_plan_to_another_context(
         references_note="تم نسخ الخطة إلى سياق جديد — يتطلب ربط المصدر وإعادة التحقق",
         planning_notes=payload.reviewerNote or orig.planning_notes,
         subject_items=list(orig.subject_items or []),
-        schedule_days=list(orig.schedule_days or []),
+        schedule_days=copied_schedule_days,
         slides=list(orig.slides or []),
         presentation_settings=dict(orig.presentation_settings or {}),
         content_origin="authored_example",
@@ -1529,7 +1754,13 @@ def copy_plan_to_another_context(
 # ==============================================================================
 
 @app.get("/api/dashboard")
-def get_dashboard_summary(contextId: Optional[str] = Query(None), db: Session = Depends(get_db)):
+def get_dashboard_summary(
+    contextId: Optional[str] = Query(None),
+    x_active_context_id: Optional[str] = Header(default=None, alias="X-Active-Context-Id"),
+    db: Session = Depends(get_db),
+):
+    if contextId and contextId.strip():
+        _assert_active_context_header(contextId, x_active_context_id)
     if not contextId:
         return {
             "context": None,
@@ -1647,8 +1878,10 @@ def get_reports_summary(
     dateFrom: Optional[str] = Query(default=None),
     dateTo: Optional[str] = Query(default=None),
     planType: Optional[str] = Query(default=None),
+    x_active_context_id: Optional[str] = Header(default=None, alias="X-Active-Context-Id"),
     db: Session = Depends(get_db),
 ):
+    _assert_active_context_header(contextId, x_active_context_id)
     ctx = db.query(EducationalContext).filter(EducationalContext.id == contextId).first()
     if not ctx:
         raise HTTPException(status_code=404, detail={"code": "CONTEXT_NOT_FOUND", "message": "السياق غير موجود."})
@@ -1716,35 +1949,42 @@ def get_reports_summary(
 # REAL EXPORTS (DOCX, PDF, PPTX, REPORT PDF, BUNDLE ZIP)
 # ==============================================================================
 
+def _serialize_export_task(t: ExportTask) -> dict:
+    artifact_on_disk = bool(t.file_path and os.path.isfile(t.file_path))
+    return {
+        "id": t.id,
+        "contextId": t.context_id,
+        "planId": t.plan_id,
+        "planVersion": t.plan_version,
+        "exportFormat": t.export_format,
+        "fileName": t.file_name,
+        "fileSize": t.file_size,
+        "contentSha256": t.content_sha256,
+        "reviewStatusSnapshot": t.review_status_snapshot,
+        "sourceVerificationSnapshot": t.source_verification_snapshot,
+        "contextSnapshot": t.context_snapshot,
+        "structuralCheckPassed": t.structural_check_passed,
+        "structuralCheckDetails": t.structural_check_details,
+        "artifactAvailable": artifact_on_disk,
+        "downloadUrl": f"/api/exports/{t.id}/download?contextId={t.context_id}",
+        "createdAt": t.created_at.isoformat() if t.created_at else None,
+    }
+
+
 @app.get("/api/exports")
-def list_exports(contextId: str = Query(...), db: Session = Depends(get_db)):
+def list_exports(
+    contextId: str = Query(...),
+    x_active_context_id: Optional[str] = Header(default=None, alias="X-Active-Context-Id"),
+    db: Session = Depends(get_db),
+):
+    _assert_active_context_header(contextId, x_active_context_id)
     tasks = (
         db.query(ExportTask)
         .filter(ExportTask.context_id == contextId)
         .order_by(ExportTask.created_at.desc())
         .all()
     )
-    return {
-        "items": [
-            {
-                "id": t.id,
-                "contextId": t.context_id,
-                "planId": t.plan_id,
-                "planVersion": t.plan_version,
-                "exportFormat": t.export_format,
-                "fileName": t.file_name,
-                "fileSize": t.file_size,
-                "contentSha256": t.content_sha256,
-                "reviewStatusSnapshot": t.review_status_snapshot,
-                "sourceVerificationSnapshot": t.source_verification_snapshot,
-                "contextSnapshot": t.context_snapshot,
-                "structuralCheckPassed": t.structural_check_passed,
-                "structuralCheckDetails": t.structural_check_details,
-                "createdAt": t.created_at.isoformat() if t.created_at else None,
-            }
-            for t in tasks
-        ]
-    }
+    return {"items": [_serialize_export_task(t) for t in tasks]}
 
 
 def _build_export_bytes(
@@ -1895,10 +2135,14 @@ def _build_export_bytes(
             indent=2,
         ).encode("utf-8")
 
+        plan_type_slug = str(plan_snap.get("planType") or "daily").strip().lower()
+        if plan_type_slug not in ("daily", "weekly", "five_day"):
+            plan_type_slug = re.sub(r"[^a-z0-9_]", "_", plan_type_slug) or "daily"
+
         z_buf = io.BytesIO()
         with zipfile.ZipFile(z_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("1_daily_plan_editable.docx", docx_b)
-            zf.writestr("2_daily_plan_printable.pdf", pdf_b)
+            zf.writestr(f"1_{plan_type_slug}_plan_editable.docx", docx_b)
+            zf.writestr(f"2_{plan_type_slug}_plan_printable.pdf", pdf_b)
             zf.writestr("3_presentation_slides_editable.pptx", pptx_b)
             zf.writestr("4_planning_completion_report.pdf", rep_pdf_b)
             zf.writestr("5_curriculum_source_metadata.json", source_json_b)
@@ -1961,31 +2205,17 @@ def create_export_task(
     db.commit()
     db.refresh(task)
 
-    return {
-        "id": task.id,
-        "contextId": task.context_id,
-        "planId": task.plan_id,
-        "planVersion": task.plan_version,
-        "exportFormat": task.export_format,
-        "fileName": task.file_name,
-        "fileSize": task.file_size,
-        "contentSha256": task.content_sha256,
-        "reviewStatusSnapshot": task.review_status_snapshot,
-        "sourceVerificationSnapshot": task.source_verification_snapshot,
-        "contextSnapshot": task.context_snapshot,
-        "structuralCheckPassed": task.structural_check_passed,
-        "structuralCheckDetails": task.structural_check_details,
-        "downloadUrl": f"/api/exports/{task.id}/download?contextId={task.context_id}",
-        "createdAt": task.created_at.isoformat() if task.created_at else None,
-    }
+    return _serialize_export_task(task)
 
 
 @app.get("/api/exports/{export_id}/download")
 def download_exported_file(
     export_id: str,
     contextId: str = Query(...),
+    x_active_context_id: Optional[str] = Header(default=None, alias="X-Active-Context-Id"),
     db: Session = Depends(get_db),
 ):
+    _assert_active_context_header(contextId, x_active_context_id)
     task = db.query(ExportTask).filter(ExportTask.id == export_id, ExportTask.context_id == contextId).first()
     if not task:
         raise HTTPException(
@@ -1993,12 +2223,22 @@ def download_exported_file(
             detail={"code": "EXPORT_FILE_NOT_FOUND", "message": "الملف المصدّر غير موجود ضمن هذا السياق."},
         )
 
-    if os.path.isfile(task.file_path):
+    ext_map = {
+        "docx": "docx",
+        "report_docx": "docx",
+        "pptx": "pptx",
+        "pdf": "pdf",
+        "report_pdf": "pdf",
+        "bundle_zip": "zip",
+    }
+    fallback_ext = ext_map.get((task.export_format or "").lower().strip(), "bin")
+
+    if task.file_path and os.path.isfile(task.file_path):
         with open(task.file_path, "rb") as f_in:
             data = f_in.read()
     else:
-        # Self-heal if container filesystem reset while ExportTask persisted in PostgreSQL
-        data, _, _, _, _, _, _, _ = _build_export_bytes(
+        # Self-heal if container filesystem reset or Backup v2 restore cleared file_path
+        data, ext, _, _, _, _, _, _ = _build_export_bytes(
             context_id=task.context_id,
             plan_id=task.plan_id,
             plan_version=task.plan_version,
@@ -2007,9 +2247,24 @@ def download_exported_file(
             context_snap_override=task.context_snapshot,
             source_status_override=task.source_verification_snapshot,
         )
-        os.makedirs(os.path.dirname(task.file_path) or EXPORTS_DIR, exist_ok=True)
-        with open(task.file_path, "wb") as f_out:
+        safe_ext = ext or fallback_ext
+        target_path = (task.file_path or "").strip()
+        if not target_path:
+            target_path = os.path.join(EXPORTS_DIR, f"{task.id}.{safe_ext}")
+        os.makedirs(os.path.dirname(target_path) or EXPORTS_DIR, exist_ok=True)
+        with open(target_path, "wb") as f_out:
             f_out.write(data)
+
+        from sqlalchemy.orm.attributes import flag_modified
+        task.file_path = target_path
+        task.file_size = len(data)
+        task.content_sha256 = hashlib.sha256(data).hexdigest()
+        details = dict(task.structural_check_details or {})
+        details["artifactAvailable"] = True
+        details["regenerated"] = True
+        task.structural_check_details = details
+        flag_modified(task, "structural_check_details")
+        db.commit()
 
     mime_map = {
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -2020,12 +2275,13 @@ def download_exported_file(
         "bundle_zip": "application/zip",
     }
     media_type = mime_map.get(task.export_format, "application/octet-stream")
+    download_name = task.file_name or f"{task.id}.{fallback_ext}"
 
     return Response(
         content=data,
         media_type=media_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{task.file_name}"',
+            "Content-Disposition": f'attachment; filename="{download_name}"',
             "X-Content-SHA256": task.content_sha256,
             "X-Plan-Version": str(task.plan_version),
         },
@@ -2219,15 +2475,27 @@ def ai_ocr_source_page(
         page_number=pg.pdf_page_number,
         context_snap=context_snap,
     )
-    pg.extracted_text = res["extractedText"]
-    pg.corrected_text = res["extractedText"]
-    pg.printed_page_number = res["printedPageNumber"]
+    candidate_text = str(res.get("extractedText") or "").strip()
+    is_offline_placeholder = "لم يتسنّ الاستخراج التلقائي" in candidate_text
+    extracted_ok = bool(res.get("extracted", True)) and bool(candidate_text) and not is_offline_placeholder
+
+    if extracted_ok:
+        pg.extracted_text = candidate_text
+        pg.corrected_text = candidate_text
+        printed_cand = str(res.get("printedPageNumber") or "").strip()
+        if printed_cand:
+            pg.printed_page_number = printed_cand
+        pg.ocr_ambiguities = detect_ocr_ambiguities(candidate_text)
+        if src.extraction_status == "requires_ocr_or_manual" and len(candidate_text) >= 3:
+            src.extraction_status = "extracted_text"
+    else:
+        pg.ocr_ambiguities = detect_ocr_ambiguities(pg.corrected_text or pg.extracted_text or "")
+
     pg.needs_ocr_review = True
     pg.updated_at = utcnow()
-    if src.extraction_status == "requires_ocr_or_manual" and len(res["extractedText"].strip()) >= 3:
-        src.extraction_status = "extracted_text"
     db.commit()
     db.refresh(pg)
+    db.refresh(src)
 
     return {
         "page": {
@@ -2237,10 +2505,13 @@ def ai_ocr_source_page(
             "extractedText": pg.extracted_text,
             "correctedText": pg.corrected_text,
             "needsOcrReview": pg.needs_ocr_review,
+            "ocrAmbiguities": pg.ocr_ambiguities,
             "humanReviewed": pg.human_reviewed,
         },
-        "notes": res["notes"],
-        "modelUsed": res["modelUsed"],
+        "extracted": extracted_ok,
+        "extractionStatus": src.extraction_status,
+        "notes": res.get("notes", ""),
+        "modelUsed": res.get("modelUsed", ""),
     }
 
 

@@ -172,9 +172,20 @@ export default function ReportsPage() {
         <div className="info-banner" style={{ borderColor: "var(--primary-green)", color: "var(--primary-green)" }}>
           <span>✓ {feedback}</span>
           {lastExportLink && (
-            <a href={lastExportLink.url} className="btn btn-secondary" style={{ padding: "4px 10px", fontSize: "0.78rem" }}>
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await downloadFile(lastExportLink.url, lastExportLink.fileName);
+                } catch (err: any) {
+                  setErrorMsg(err?.message || "تعذر تنزيل الملف.");
+                }
+              }}
+              className="btn btn-secondary"
+              style={{ padding: "4px 10px", fontSize: "0.78rem" }}
+            >
               تنزيل {lastExportLink.fileName}
-            </a>
+            </button>
           )}
         </div>
       )}

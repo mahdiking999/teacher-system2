@@ -2,9 +2,12 @@ import base64
 import json
 import os
 import re
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
+
+from .pdf_service import normalize_indesign_arabic_ligatures
 
 OMNIROUTE_BASE_URL = os.getenv("OMNIROUTE_BASE_URL", "http://100.120.103.82:20128/v1").rstrip("/")
 OMNIROUTE_API_KEY = os.getenv("OMNIROUTE_API_KEY", "").strip()
@@ -42,12 +45,20 @@ def _next_nvidia_key(keys: List[str]) -> str:
     return key
 
 
+def _is_omniroute_keyless_allowed() -> bool:
+    raw = os.getenv("OMNIROUTE_ALLOW_KEYLESS", "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def get_ai_status() -> Dict[str, Any]:
-    omni_base = os.getenv("OMNIROUTE_BASE_URL", OMNIROUTE_BASE_URL).rstrip("/")
-    omni_ready = bool(omni_base and os.getenv("OMNIROUTE_API_KEY", "").strip())
+    omni_base = os.getenv("OMNIROUTE_BASE_URL", OMNIROUTE_BASE_URL).strip().rstrip("/")
+    omni_key = os.getenv("OMNIROUTE_API_KEY", OMNIROUTE_API_KEY).strip()
+    omni_ready = bool(omni_base and (omni_key or _is_omniroute_keyless_allowed()))
     ready = omni_ready or bool(_get_nvidia_keys())
     return {
         "available": ready,
+        "configured": ready,
+        "mode": "live" if ready else "fallback",
         "textGenerationReady": ready,
         "visionGenerationReady": ready,
         "fallbackAvailable": True,
@@ -114,10 +125,11 @@ def _post_chat_completion(
         "temperature": 0.3,
         "max_tokens": 4096,
     }
-    headers = {
+    headers: Dict[str, str] = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
     }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     timeout = httpx.Timeout(timeout_sec, connect=2.5)
     client_kwargs: Dict[str, Any] = {"timeout": timeout}
     if proxy_url:
@@ -142,11 +154,11 @@ def call_llm_json(
     timeout_sec: float = 18.0,
 ) -> Tuple[Optional[Dict[str, Any]], str]:
     models = VISION_MODELS if image_png_bytes else TEXT_MODELS
-    omni_base = os.getenv("OMNIROUTE_BASE_URL", OMNIROUTE_BASE_URL).rstrip("/")
+    omni_base = os.getenv("OMNIROUTE_BASE_URL", OMNIROUTE_BASE_URL).strip().rstrip("/")
     omni_key = os.getenv("OMNIROUTE_API_KEY", OMNIROUTE_API_KEY).strip()
     ts_proxy = os.getenv("TAILSCALE_HTTP_PROXY", "").strip() or None
 
-    if omni_base and omni_key:
+    if omni_base and (omni_key or _is_omniroute_keyless_allowed()):
         proxy_candidates = [ts_proxy, None] if ts_proxy else [None]
         for m in models:
             for p_url in proxy_candidates:
@@ -500,34 +512,82 @@ def ocr_pdf_page_with_ai(
     )
     if isinstance(parsed, dict) and str(parsed.get("extractedText") or "").strip():
         return {
+            "extracted": True,
             "extractedText": str(parsed["extractedText"]).strip(),
             "printedPageNumber": str(parsed.get("printedPageNumber") or page_number).strip(),
             "notes": str(parsed.get("notes") or "").strip(),
             "modelUsed": model_used,
         }
 
+    preserved = fallback_text.strip()
     return {
-        "extractedText": fallback_text.strip() or f"[صفحة {page_number}: لم يتسنّ الاستخراج التلقائي — يرجى المراجعة اليدوية]",
+        "extracted": False,
+        "extractedText": preserved,
         "printedPageNumber": str(page_number),
-        "notes": "تم اعتماد النص المستخرج محليًا عبر PyMuPDF." if fallback_text.strip() else "تعذر الوصول لنموذج الرؤية الذكية؛ الصفحة بحاجة لتفريغ يدوي.",
+        "notes": "تم الإبقاء على النص المستخرج محليًا عبر PyMuPDF لعدم توفر نموذج الرؤية الحية." if preserved else "تعذر الوصول لنموذج الرؤية الذكية؛ الصفحة بحاجة لتفريغ يدوي.",
         "modelUsed": model_used,
     }
+
+
+_TOC_KEYWORDS = ("المحتويات", "الـمحتويــات", "الفهرس", "فهرس", "Contents", "Content")
+_AR_INDIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+_ARABIC_ORDINALS: Dict[str, int] = {
+    "الاول": 1, "الأول": 1, "الاولى": 1, "الأولى": 1,
+    "الثاني": 2, "الثانية": 2, "الثالث": 3, "الثالثة": 3,
+    "الرابع": 4, "الرابعة": 4, "الخامس": 5, "الخامسة": 5,
+    "السادس": 6, "السادسة": 6, "السابع": 7, "السابعة": 7,
+    "الثامن": 8, "الثامنة": 8, "التاسع": 9, "التاسعة": 9,
+    "العاشر": 10, "العاشرة": 10, "الحادي عشر": 11, "الحادية عشرة": 11,
+    "الثاني عشر": 12, "الثانية عشرة": 12,
+}
+
+
+def _has_toc_keyword(txt: str) -> bool:
+    if not txt:
+        return False
+    plain = txt.replace("\u0640", "")
+    return any(k in plain for k in _TOC_KEYWORDS)
+
+
+def _is_toc_page_text(txt: str) -> bool:
+    if not txt:
+        return False
+    if _has_toc_keyword(txt):
+        return True
+    plain = txt.replace("\u0640", "")
+    lesson_lines = sum(1 for ln in plain.splitlines() if "الدرس" in ln or re.search(r"\b\d{1,2}\s*-\s*\d{1,2}\b", ln))
+    return lesson_lines >= 5 and ("الفصل" in plain or "الوحدة" in plain or "Chapter" in plain)
+
+
+def _clean_structural_page_text(txt: str) -> str:
+    if not txt:
+        return ""
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in txt.splitlines()]
+    lines = [ln for ln in lines if ln]
+    return "\n".join(lines)
 
 
 def _select_structural_pages(pages_text: List[Dict[str, Any]], max_pages: int = 24) -> List[Dict[str, Any]]:
     """Prioritize Table of Contents (المحتويات/الفهرس anywhere in the book, including end-of-book Iraqi TOCs)
     and Chapter Opener pages (الفصل + multiple الدرس entries) before falling back to leading pages."""
-    structural: List[Dict[str, Any]] = []
+    explicit_toc_pages: List[Dict[str, Any]] = []
+    dense_toc_pages: List[Dict[str, Any]] = []
+    opener_pages: List[Dict[str, Any]] = []
     seen_nums = set()
-    toc_keywords = ("المحتويات", "الـمحتويــات", "الفهرس", "Content", "Contents", "فهرس")
     for p in pages_text:
         txt = str(p.get("text") or "")
         pnum = p.get("pdfPageNumber")
-        is_toc = any(k in txt for k in toc_keywords)
-        is_chapter_opener = ("الفصل" in txt or "الوحدة" in txt) and txt.count("الدرس") >= 2
-        if is_toc or is_chapter_opener:
-            structural.append(p)
+        if _has_toc_keyword(txt):
+            explicit_toc_pages.append(p)
             seen_nums.add(pnum)
+        elif _is_toc_page_text(txt):
+            dense_toc_pages.append(p)
+            seen_nums.add(pnum)
+        elif ("الفصل" in txt or "الوحدة" in txt or "Chapter" in txt) and (txt.count("الدرس") >= 2 or txt.count("Lesson") >= 2):
+            opener_pages.append(p)
+            seen_nums.add(pnum)
+
+    structural = explicit_toc_pages + dense_toc_pages + opener_pages
     if len(structural) >= 3:
         return structural[:max_pages]
     for p in pages_text[:max_pages]:
@@ -540,6 +600,283 @@ def _select_structural_pages(pages_text: List[Dict[str, Any]], max_pages: int = 
     return structural
 
 
+def _clean_toc_title(raw_title: str) -> str:
+    s = raw_title.replace("\u0640", "")
+    s = re.sub(r"[ \t]+", " ", s).strip()
+    # Strip dot leaders & trailing page numbers if still attached
+    s = re.sub(r"[\.·•…_]{2,}\s*\d*\s*$", "", s).strip()
+    s = re.sub(r"^[\.\:\-\–\—\)]+", "", s).strip()
+    s = re.sub(r"[\.\:\-\–\—\(]+$", "", s).strip()
+    # Repair InDesign LTR trailing variable placement (". R ... في" -> "... في R")
+    if s.startswith("R ") and s.endswith(" في"):
+        s = s[2:].strip() + " R"
+    elif s.startswith("R "):
+        s = s[2:].strip()
+    if s.count("(") > s.count(")"):
+        s += ")"
+    return s
+
+
+def _parse_ordinal_or_int(token: str, default_val: int) -> int:
+    clean_tok = re.sub(r"[\u064B-\u065F\u0670\u0640]", "", token).translate(_AR_INDIC_DIGITS).strip()
+    if clean_tok.isdigit():
+        return int(clean_tok)
+    return _ARABIC_ORDINALS.get(clean_tok, default_val)
+
+
+def _match_chapter_heading(line_clean: str, fallback_num: int) -> Optional[Tuple[int, str, Optional[int]]]:
+    # Iraqi InDesign reversed TOC/opener format: "[page?] : <title><num> الفصل"
+    m_rev = re.match(
+        r"^(?:(\d{1,4})\s+)?[:\-\.]*\s*(.+?)\s*(\d{1,2})\s*(الفصل|الوحدة|الباب)\s*$",
+        line_clean,
+    )
+    if m_rev:
+        pg = int(m_rev.group(1)) if m_rev.group(1) else None
+        title = _clean_toc_title(m_rev.group(2))
+        cnum = int(m_rev.group(3))
+        if title:
+            return cnum, f"{m_rev.group(4)} {cnum}: {title}", pg
+
+    # Standard Arabic/English forward format: "[page?] الفصل <num/ordinal>: <title> [page?]"
+    m_fwd = re.match(
+        r"^(?:(\d{1,4})\s+)?(الفصل|الوحدة|الباب|Chapter)\s+([0-9]+|[\u0621-\u064A]+(?:\s+عشر[ة]?)?)\s*[:\-\–\—]\s*(.+?)(?:[\.·•…_\s]+(\d{1,4}))?\s*$",
+        line_clean,
+        re.IGNORECASE,
+    )
+    if m_fwd:
+        pg_raw = m_fwd.group(1) or m_fwd.group(5)
+        pg = int(pg_raw) if pg_raw else None
+        raw_num = m_fwd.group(3).strip()
+        cnum = _parse_ordinal_or_int(raw_num, fallback_num)
+        title = _clean_toc_title(m_fwd.group(4))
+        if title:
+            return cnum, f"{m_fwd.group(2)} {raw_num}: {title}", pg
+
+    return None
+
+
+def _match_lesson_heading(line_clean: str) -> Optional[Tuple[str, Optional[int]]]:
+    # Forward format with optional InDesign prefix noise (". R ", ".)", etc.):
+    # "[page?] [. R )] الدرس <ord/num>: <title> [page?]"
+    m_fwd = re.match(
+        r"^(?:(\d{1,4})\s+)?(?:[\.\)\(]+|[A-Za-z\.\s]{1,5})*\s*(?:الدرس|Lesson)\s+([^\s:]+)\s*[:\-\–\—]\s*(.+?)(?:[\.·•…_\s]+(\d{1,4}))?\s*$",
+        line_clean,
+        re.IGNORECASE,
+    )
+    if m_fwd:
+        pg_raw = m_fwd.group(1) or m_fwd.group(4)
+        pg = int(pg_raw) if pg_raw else None
+        title = _clean_toc_title(m_fwd.group(3))
+        if m_fwd.group(3).strip().startswith("R ") or " R " in line_clean[:8]:
+            if title.endswith(" في") and not title.endswith(" R"):
+                title = f"{title} R"
+        if title:
+            return title, pg
+
+    # Reverse TOC format (Chapter 7 on p.196): "[page?] <title> : الدرس <ord>"
+    m_rev = re.match(
+        r"^(?:(\d{1,4})\s+)?(.+?)\s*[:\-\–\—]\s*الدرس\s+(\S+)\s*$",
+        line_clean,
+    )
+    if m_rev:
+        pg = int(m_rev.group(1)) if m_rev.group(1) else None
+        title = _clean_toc_title(m_rev.group(2))
+        if title:
+            return title, pg
+
+    # Numbered lesson code format: "[1-1] <title> .... 6" or "1-1: <title> 6"
+    m_code = re.match(
+        r"^(?:\[?\s*(\d{1,2})\s*-\s*(\d{1,2})\s*\]?)\s*[:\-\s]+(.+?)(?:[\.·•…_\s]+(\d{1,4}))?\s*$",
+        line_clean,
+    )
+    if m_code:
+        pg = int(m_code.group(4)) if m_code.group(4) else None
+        title = _clean_toc_title(m_code.group(3))
+        if title:
+            return title, pg
+
+    return None
+
+
+def _build_lesson_entry(title: str, pdf_page: int, printed_page: str) -> Dict[str, Any]:
+    return {
+        "title": title[:160],
+        "pdfPageNumber": pdf_page,
+        "printedPageNumber": printed_page,
+        "objectives": [f"فهم وتطبيق المفاهيم الأساسية في درس {title[:100]}."],
+        "priorKnowledge": "استرجاع المتطلبات القبلية والمفاهيم التمهيدية المرتبطة بالدرس.",
+        "evaluationCriteria": "التحقق من فهم المفاهيم الرئيسة وحل التطبيقات المرتبطة بالدرس.",
+    }
+
+
+def _fallback_extract_structure(pages_text: List[Dict[str, Any]], source_title: str) -> List[Dict[str, Any]]:
+    normalized_pages: List[Dict[str, Any]] = []
+    printed_to_pdf: Dict[str, int] = {}
+    for p in pages_text:
+        pno = int(p.get("pdfPageNumber") or 1)
+        pr = str(p.get("printedPageNumber") or pno).translate(_AR_INDIC_DIGITS).strip()
+        raw_txt = unicodedata.normalize("NFKC", str(p.get("text") or ""))
+        norm_txt = normalize_indesign_arabic_ligatures(raw_txt)
+        normalized_pages.append({"pdfPageNumber": pno, "printedPageNumber": pr, "text": norm_txt})
+        if pr and pr not in printed_to_pdf:
+            printed_to_pdf[pr] = pno
+
+    def _resolve_page(printed_val: Optional[int]) -> Optional[int]:
+        if printed_val is None:
+            return None
+        key = str(printed_val)
+        if key in printed_to_pdf:
+            return printed_to_pdf[key]
+        if 1 <= printed_val <= len(normalized_pages):
+            return printed_val
+        return printed_val
+
+    # 1. Try parsing dedicated Table of Contents pages first
+    toc_pages = [p for p in normalized_pages if _has_toc_keyword(p["text"])]
+    parsed_chapters: List[Dict[str, Any]] = []
+    orphan_nums: List[int] = []
+    cur_ch: Optional[Dict[str, Any]] = None
+
+    for p in toc_pages:
+        pno_str = str(p["pdfPageNumber"])
+        pr_str = str(p["printedPageNumber"])
+        lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in p["text"].splitlines() if ln.strip()]
+        collecting_orphans = cur_ch is None
+        for idx, ln in enumerate(lines):
+            ln_clean = re.sub(r"[\u064B-\u065F\u0670\u0640]", "", ln).translate(_AR_INDIC_DIGITS).strip()
+            if idx <= 1 and ln_clean in (pno_str, pr_str):
+                continue
+            if any(k in ln_clean for k in _TOC_KEYWORDS) and len(ln_clean) < 40:
+                continue
+            if re.fullmatch(r"\d{1,4}", ln_clean):
+                if collecting_orphans and cur_ch is None:
+                    orphan_nums.append(int(ln_clean))
+                continue
+            collecting_orphans = False
+
+            ch_match = _match_chapter_heading(ln_clean, len(parsed_chapters) + 1)
+            if ch_match:
+                cnum, ctitle, cpg = ch_match
+                cur_ch = {
+                    "_num": cnum,
+                    "title": ctitle,
+                    "_rawPage": cpg,
+                    "lessons": [],
+                }
+                parsed_chapters.append(cur_ch)
+                continue
+
+            les_match = _match_lesson_heading(ln_clean)
+            if les_match and cur_ch is not None:
+                ltitle, lpg = les_match
+                cur_ch["lessons"].append({"title": ltitle, "_rawPage": lpg})
+
+    # Reattach detached InDesign numeric column (e.g. Ch. 4 on p.195) if unambiguous
+    missing_chs = [c for c in parsed_chapters if c["_rawPage"] is None]
+    if len(missing_chs) == 1 and orphan_nums and len(orphan_nums) == 1 + len(missing_chs[0]["lessons"]):
+        missing_chs[0]["_rawPage"] = orphan_nums[0]
+        for les, pval in zip(missing_chs[0]["lessons"], orphan_nums[1:]):
+            if les["_rawPage"] is None:
+                les["_rawPage"] = pval
+
+    if parsed_chapters and sum(len(c["lessons"]) for c in parsed_chapters) > 0:
+        parsed_chapters.sort(key=lambda c: (c["_num"], c["_rawPage"] or 99999))
+        output_chapters: List[Dict[str, Any]] = []
+        for ch in parsed_chapters:
+            ch_pdf_pg = _resolve_page(ch["_rawPage"]) or 1
+            ch_printed = str(ch["_rawPage"] or ch_pdf_pg)
+            lessons_out: List[Dict[str, Any]] = []
+            for l_idx, les in enumerate(ch["lessons"], start=1):
+                l_raw = les["_rawPage"]
+                if l_raw is None:
+                    # Try locating lesson code [ch-les] in body pages
+                    code_a = f"[{ch['_num']}-{l_idx}]"
+                    code_b = f"]{ch['_num']}-{l_idx}["
+                    for bp in normalized_pages:
+                        if code_a in bp["text"] or code_b in bp["text"]:
+                            l_raw = bp["pdfPageNumber"]
+                            break
+                l_pdf_pg = _resolve_page(l_raw) or ch_pdf_pg
+                lessons_out.append(_build_lesson_entry(les["title"], l_pdf_pg, str(l_raw or l_pdf_pg)))
+            if not lessons_out:
+                lessons_out.append(_build_lesson_entry(ch["title"], ch_pdf_pg, ch_printed))
+            output_chapters.append(
+                {
+                    "title": ch["title"],
+                    "pdfStartPage": ch_pdf_pg,
+                    "printedStartPage": ch_printed,
+                    "lessons": lessons_out,
+                }
+            )
+        return output_chapters
+
+    # 2. Scan body pages directly for Chapter / Lesson headings when no TOC page exists
+    body_chapters: List[Dict[str, Any]] = []
+    cur_body_ch: Optional[Dict[str, Any]] = None
+    for p in normalized_pages:
+        pno = p["pdfPageNumber"]
+        pr = p["printedPageNumber"] or str(pno)
+        for ln in p["text"].splitlines():
+            ln_clean = re.sub(r"[\u064B-\u065F\u0670\u0640]", "", re.sub(r"[ \t]+", " ", ln)).translate(_AR_INDIC_DIGITS).strip()
+            if not ln_clean:
+                continue
+            ch_match = _match_chapter_heading(ln_clean, len(body_chapters) + 1)
+            if ch_match:
+                cnum, ctitle, _ = ch_match
+                if not any(c["title"] == ctitle for c in body_chapters):
+                    cur_body_ch = {"_num": cnum, "title": ctitle, "pdfStartPage": pno, "printedStartPage": pr, "lessons": []}
+                    body_chapters.append(cur_body_ch)
+                continue
+            les_match = _match_lesson_heading(ln_clean)
+            if les_match:
+                ltitle, _ = les_match
+                if cur_body_ch is None:
+                    cur_body_ch = {"_num": 1, "title": f"فهرس مستخرج — {source_title}", "pdfStartPage": pno, "printedStartPage": pr, "lessons": []}
+                    body_chapters.append(cur_body_ch)
+                if not any(l["title"] == ltitle for l in cur_body_ch["lessons"]):
+                    cur_body_ch["lessons"].append(_build_lesson_entry(ltitle, pno, pr))
+
+    if body_chapters:
+        final_body: List[Dict[str, Any]] = []
+        for ch in body_chapters:
+            if not ch["lessons"]:
+                ch["lessons"].append(_build_lesson_entry(ch["title"], ch["pdfStartPage"], ch["printedStartPage"]))
+            final_body.append(
+                {
+                    "title": ch["title"],
+                    "pdfStartPage": ch["pdfStartPage"],
+                    "printedStartPage": ch["printedStartPage"],
+                    "lessons": ch["lessons"],
+                }
+            )
+        return final_body
+
+    # 3. Last-resort fallback from meaningful non-empty page first lines
+    fallback_lessons = []
+    for p in normalized_pages[:10]:
+        txt = p["text"].strip()
+        if not txt:
+            continue
+        first_line = next(
+            (ln.strip() for ln in txt.splitlines() if len(ln.strip()) >= 3 and not re.fullmatch(r"[\d\W]+", ln.strip())),
+            "",
+        )
+        if first_line:
+            fallback_lessons.append(
+                _build_lesson_entry(first_line[:120], p["pdfPageNumber"], p["printedPageNumber"] or str(p["pdfPageNumber"]))
+            )
+    if not fallback_lessons:
+        fallback_lessons = [_build_lesson_entry(f"محتوى مستخرج من {source_title}", 1, "1")]
+    return [
+        {
+            "title": f"فهرس مستخرج — {source_title}",
+            "pdfStartPage": normalized_pages[0]["pdfPageNumber"] if normalized_pages else 1,
+            "printedStartPage": str(normalized_pages[0].get("printedPageNumber", "1")) if normalized_pages else "1",
+            "lessons": fallback_lessons,
+        }
+    ]
+
+
 def extract_chapters_and_lessons_with_ai(
     pages_text: List[Dict[str, Any]],
     context_snap: Dict[str, Any],
@@ -548,10 +885,16 @@ def extract_chapters_and_lessons_with_ai(
     subject = context_snap.get("subject") or "المادة"
     grade = context_snap.get("grade") or ""
     selected_pages = _select_structural_pages(pages_text, max_pages=24)
-    combined_pages = "\n\n".join(
-        f"--- PDF Page {p.get('pdfPageNumber')} (Printed {p.get('printedPageNumber')}) ---\n{str(p.get('text') or '')[:1400]}"
-        for p in selected_pages
-    )
+
+    formatted_sections: List[str] = []
+    for p in selected_pages:
+        raw_txt = str(p.get("text") or "")
+        cleaned_txt = _clean_structural_page_text(raw_txt)
+        budget = 6000 if _is_toc_page_text(raw_txt) else 2200
+        formatted_sections.append(
+            f"--- PDF Page {p.get('pdfPageNumber')} (Printed {p.get('printedPageNumber')}) ---\n{cleaned_txt[:budget]}"
+        )
+    combined_pages = "\n\n".join(formatted_sections)
 
     system_prompt = (
         "أنت محلل مناهج تعليمية. استخرج بنية جميع الفصول والدروس الموجودة فعليًا في صفحات الفهرس/المحتويات ومقدمات الفصول فقط دون اختلاق دروس غير موجودة. "
@@ -567,43 +910,7 @@ def extract_chapters_and_lessons_with_ai(
     if isinstance(chapters, list) and len(chapters) > 0:
         return {"chapters": chapters, "modelUsed": model_used}
 
-    # Deterministic fallback from extracted page headings
-    fallback_lessons = []
-    for p in pages_text[:10]:
-        txt = str(p.get("text") or "").strip()
-        if not txt:
-            continue
-        first_line = next((ln.strip() for ln in txt.splitlines() if len(ln.strip()) >= 3), "")
-        if first_line:
-            fallback_lessons.append(
-                {
-                    "title": first_line[:120],
-                    "pdfPageNumber": p.get("pdfPageNumber", 1),
-                    "printedPageNumber": str(p.get("printedPageNumber") or p.get("pdfPageNumber", 1)),
-                    "objectives": [f"استيعاب المفاهيم الواردة في: {first_line[:80]}"],
-                    "priorKnowledge": "المعارف التمهيدية للوحدة.",
-                    "evaluationCriteria": "التحقق من فهم المفاهيم الرئيسة في الصفحة.",
-                }
-            )
-    if not fallback_lessons:
-        fallback_lessons = [
-            {
-                "title": f"محتوى مستخرج من {source_title}",
-                "pdfPageNumber": 1,
-                "printedPageNumber": "1",
-                "objectives": ["مراجعة أهداف الدرس من الكتاب المدرسي."],
-                "priorKnowledge": "",
-                "evaluationCriteria": "تقييم تكويني وفق أهداف الدرس.",
-            }
-        ]
     return {
-        "chapters": [
-            {
-                "title": f"فهرس مستخرج — {source_title}",
-                "pdfStartPage": pages_text[0].get("pdfPageNumber", 1) if pages_text else 1,
-                "printedStartPage": str(pages_text[0].get("printedPageNumber", "1")) if pages_text else "1",
-                "lessons": fallback_lessons,
-            }
-        ],
+        "chapters": _fallback_extract_structure(pages_text, source_title),
         "modelUsed": "deterministic_fallback",
     }

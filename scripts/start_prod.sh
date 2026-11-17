@@ -3,6 +3,17 @@ set -e
 
 mkdir -p "${DATA_DIR:-/app/data}" "${STORAGE_ROOT:-/app/backend/storage}/uploads" "${STORAGE_ROOT:-/app/backend/storage}/exports"
 
+if [ -z "$(printf '%s' "${PILOT_ACCESS_PIN:-}" | tr -d '[:space:]')" ]; then
+  cat >&2 <<'EOF'
+============================================================================
+[start_prod] WARNING: PILOT_ACCESS_PIN is unset or empty!
+[start_prod] Backend fails closed with HTTP 503 (PILOT_PIN_NOT_CONFIGURED)
+[start_prod] on ALL /api/* endpoints EXCEPT /api/health (which returns 200).
+[start_prod] Configure a non-empty PILOT_ACCESS_PIN secret before serving traffic.
+============================================================================
+EOF
+fi
+
 if [ -n "${TAILSCALE_AUTHKEY:-}" ]; then
   echo "[start_prod] Starting Tailscale userspace daemon + HTTP proxy on 127.0.0.1:1055..."
   mkdir -p /tmp/tailscale

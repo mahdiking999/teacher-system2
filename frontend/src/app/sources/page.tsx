@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useTeacherApp, WorkflowStepper } from "../../components/AppShell";
 
 export default function SourcesImportPage() {
-  const { activeContext, activeContextId, apiFetch } = useTeacherApp();
+  const { activeContext, activeContextId, apiFetch, refreshContexts, aiStatus } = useTeacherApp();
   const [sources, setSources] = useState<any[]>([]);
   const [selectedSourceId, setSelectedSourceId] = useState<string>("");
   const [loading, setLoading] = useState<boolean>(true);
@@ -16,11 +16,15 @@ export default function SourcesImportPage() {
   const [aiProcessing, setAiProcessing] = useState<string>("");
   const [feedback, setFeedback] = useState<string>("");
   const [errorMsg, setErrorMsg] = useState<string>("");
+  const [ocrWarning, setOcrWarning] = useState<string>("");
   const [extractedSummary, setExtractedSummary] = useState<{
     chaptersCreated: number;
     lessonsCreated: number;
     modelUsed: string;
   } | null>(null);
+  const [pageImageUrl, setPageImageUrl] = useState<string>("");
+  const [pageImageLoading, setPageImageLoading] = useState<boolean>(false);
+  const [pageImageError, setPageImageError] = useState<string>("");
 
   // Metadata Form State matching `استيراد كتاب المنهج.png`
   const [title, setTitle] = useState<string>("كتاب المنهج");
@@ -37,6 +41,7 @@ export default function SourcesImportPage() {
 
   const bindSource = useCallback(
     (src: any | null, keepPageIdx?: number) => {
+      setOcrWarning("");
       if (!src) {
         setSelectedSourceId("");
         setTitle(activeContext?.curriculumName || "كتاب المنهج");
@@ -120,6 +125,7 @@ export default function SourcesImportPage() {
     let cancelled = false;
     setFeedback("");
     setErrorMsg("");
+    setOcrWarning("");
     setExtractedSummary(null);
     setSelectedSourceId("");
     bindSource(null);
@@ -131,6 +137,58 @@ export default function SourcesImportPage() {
 
   const currentSource = sources.find((s) => s.id === selectedSourceId) || null;
   const currentPage = currentSource?.pages?.[selectedPageIdx] || null;
+
+  useEffect(() => {
+    let cancelled = false;
+    let createdObjectUrl = "";
+    setPageImageUrl("");
+    setPageImageError("");
+
+    if (
+      !activeContextId ||
+      !currentSource?.id ||
+      !currentPage?.id ||
+      currentSource.extractionStatus === "no_file" ||
+      !(currentSource.pageCount > 0)
+    ) {
+      setPageImageLoading(false);
+      return;
+    }
+
+    async function loadPagePreviewImage() {
+      setPageImageLoading(true);
+      try {
+        const res = await apiFetch(
+          `/api/sources/${encodeURIComponent(currentSource.id)}/pages/${encodeURIComponent(currentPage.id)}/image?contextId=${encodeURIComponent(activeContextId)}`
+        );
+        if (cancelled) return;
+        if (res instanceof Response) {
+          const blob = await res.blob();
+          if (cancelled) return;
+          createdObjectUrl = URL.createObjectURL(blob);
+          setPageImageUrl(createdObjectUrl);
+        } else {
+          setPageImageError("معاينة صورة الصفحة غير متوفرة بصيغة صورة صالحة.");
+        }
+      } catch {
+        if (!cancelled) {
+          setPageImageError("معاينة صورة الصفحة غير متاحة حاليًا من الخادم؛ يمكنك المتابعة بقراءة أو تفريغ النص مباشرة.");
+        }
+      } finally {
+        if (!cancelled) {
+          setPageImageLoading(false);
+        }
+      }
+    }
+
+    loadPagePreviewImage();
+    return () => {
+      cancelled = true;
+      if (createdObjectUrl) {
+        URL.revokeObjectURL(createdObjectUrl);
+      }
+    };
+  }, [activeContextId, currentSource?.id, currentSource?.extractionStatus, currentSource?.pageCount, currentPage?.id, apiFetch]);
 
   const uploadPdfFile = async (file: File) => {
     if (!file.name.toLowerCase().endsWith(".pdf") && file.type !== "application/pdf") {
@@ -163,6 +221,7 @@ export default function SourcesImportPage() {
         }).`
       );
       await loadSources(created.id, 0);
+      await refreshContexts();
     } catch (err: any) {
       setErrorMsg(err?.message || "تعذر رفع ملف PDF.");
     } finally {
@@ -218,6 +277,7 @@ export default function SourcesImportPage() {
           : "تم حفظ بيانات المصدر في قاعدة البيانات."
       );
       await loadSources(updated.id, selectedPageIdx);
+      await refreshContexts();
     } catch (err: any) {
       setErrorMsg(err?.message || "تعذر حفظ بيانات المصدر.");
     } finally {
@@ -255,6 +315,7 @@ export default function SourcesImportPage() {
     setSelectedPageIdx(idx);
     setPageDirty(false);
     setPendingPageSwitchIdx(null);
+    setOcrWarning("");
     const pg = currentSource?.pages?.[idx];
     if (pg) {
       setCorrectedPageText(pg.correctedText || pg.extractedText || "");
@@ -275,11 +336,25 @@ export default function SourcesImportPage() {
     setAiProcessing("ocr");
     setErrorMsg("");
     setFeedback("");
+    setOcrWarning("");
     try {
       const res = await apiFetch(`/api/sources/${currentSource.id}/pages/${currentPage.id}/ai-ocr`, {
         method: "POST",
         body: JSON.stringify({ contextId: activeContextId }),
       });
+      const rawModel = String(res?.modelUsed || "");
+      const ocrFailed =
+        res?.extracted === false ||
+        (res?.extracted === undefined && rawModel === "deterministic_fallback");
+
+      if (ocrFailed) {
+        const extraNote = res?.notes ? ` (${res.notes})` : "";
+        setOcrWarning(
+          `تعذر استخراج النص بالرؤية الذكية لصفحة PDF رقم ${currentPage.pdfPageNumber}؛ يرجى قراءة صورة الصفحة وتفريغ النص يدويًا.${extraNote}`
+        );
+        return;
+      }
+
       if (res?.page) {
         setCorrectedPageText(res.page.correctedText || res.page.extractedText || "");
         setPrintedPageNumber(res.page.printedPageNumber || String(currentPage.pdfPageNumber));
@@ -287,7 +362,7 @@ export default function SourcesImportPage() {
       }
       await loadSources(currentSource.id, selectedPageIdx);
       setFeedback(
-        `تم استخراج النص بالرؤية الذكية لصفحة PDF رقم ${currentPage.pdfPageNumber} عبر (${res?.modelUsed || "NVIDIA NIM Vision"}). راجع النص قبل الاعتماد.`
+        `تم استخراج النص بالرؤية الذكية لصفحة PDF رقم ${currentPage.pdfPageNumber} عبر (${rawModel || aiStatus.visionModel || "Vision OCR"}). راجع النص قبل الاعتماد.`
       );
     } catch (err: any) {
       setErrorMsg(err?.message || "تعذر تنفيذ استخراج النص بالرؤية الذكية.");
@@ -307,14 +382,19 @@ export default function SourcesImportPage() {
         body: JSON.stringify({ contextId: activeContextId }),
       });
       await loadSources(currentSource.id, selectedPageIdx);
+      const rawModel = String(res?.modelUsed || "");
+      const isFallback = !rawModel || rawModel === "deterministic_fallback";
+      const modelLabel = isFallback ? "توليد منهجي احتياطي (بدون ذكاء اصطناعي حي)" : rawModel;
       const summaryObj = {
         chaptersCreated: res?.chaptersCreated ?? 0,
         lessonsCreated: res?.lessonsCreated ?? 0,
-        modelUsed: res?.modelUsed || "NVIDIA NIM",
+        modelUsed: modelLabel,
       };
       setExtractedSummary(summaryObj);
       setFeedback(
-        `تم استخراج الفصول والدروس تلقائيًا عبر (${summaryObj.modelUsed}): أُنشئ ${summaryObj.chaptersCreated} فصلًا و${summaryObj.lessonsCreated} درسًا.`
+        isFallback
+          ? `تم استخلاص الفصول والدروس أوليًا عبر (${modelLabel}): أُنشئ ${summaryObj.chaptersCreated} فصلًا و${summaryObj.lessonsCreated} درسًا. يُنصح بمراجعة الفهرس وتعديله.`
+          : `تم استخراج الفصول والدروس تلقائيًا عبر (${modelLabel}): أُنشئ ${summaryObj.chaptersCreated} فصلًا و${summaryObj.lessonsCreated} درسًا.`
       );
     } catch (err: any) {
       setErrorMsg(err?.message || "تعذر استخراج الفصول والدروس تلقائيًا.");
@@ -337,7 +417,7 @@ export default function SourcesImportPage() {
 
       <div className="info-banner">
         <span>
-          ⓘ يفحص الخادم توقيع الملف الفعلي (`%PDF-`) والحجم وعدد الصفحات ويحسب بصمة SHA-256، ويفصل بين رقم صفحة PDF ورقم الصفحة المطبوعة.
+          ⓘ يفحص الخادم توقيع الملف الفعلي (%PDF-) والحجم وعدد الصفحات ويحسب بصمة SHA-256، ويفصل بين رقم صفحة PDF ورقم الصفحة المطبوعة.
         </span>
       </div>
 
@@ -427,7 +507,7 @@ export default function SourcesImportPage() {
               اسحب ملف الكتاب وأفلته هنا أو اختر ملفًا
             </div>
             <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginBottom: "14px" }}>
-              PDF فقط · يُفحص التوقيع الفعلي (`%PDF-`) ولا تُضاف حالة توثيق تلقائيًا
+              PDF فقط · يُفحص التوقيع الفعلي (%PDF-) ولا تُضاف حالة توثيق تلقائيًا
             </div>
             <label className="btn btn-secondary" style={{ cursor: uploading ? "not-allowed" : "pointer" }}>
               {uploading ? "جارٍ رفع وفحص الملف..." : "اختيار ملف PDF حقيقي"}
@@ -657,11 +737,20 @@ export default function SourcesImportPage() {
       {/* Page Text & OCR Ambiguity Review Section */}
       {currentSource?.pages && currentSource.pages.length > 0 && (
         <div className="card">
-          <h3 style={{ fontSize: "1.15rem", fontWeight: 800, marginBottom: "4px" }}>
-            معاينة صفحات PDF واستخراج/تصحيح النص وفحص مواضع OCR الملتبسة
-          </h3>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "4px" }}>
+            <h3 style={{ fontSize: "1.15rem", fontWeight: 800 }}>
+              معاينة صفحات PDF واستخراج/تصحيح النص وفحص مواضع OCR الملتبسة
+            </h3>
+            <span className={`badge ${aiStatus.loading ? "badge-neutral" : aiStatus.mode === "live" ? "badge-success" : "badge-warning"}`}>
+              {aiStatus.loading
+                ? "جارٍ فحص بوابة الرؤية..."
+                : aiStatus.mode === "live"
+                ? `رؤية ذكية متصلة (${aiStatus.visionModel})`
+                : "بوابة الرؤية غير متصلة — تفريغ يدوي / احتياطي"}
+            </span>
+          </div>
           <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)", marginBottom: "12px" }}>
-            يُحفظ رقم صفحة PDF ورقم الصفحة المطبوعة كلٌّ على حدة، مع تنبيه لمواضع الأعلام والتواريخ والاقتباسات والرموز والكسور.
+            يُحفظ رقم صفحة PDF ورقم الصفحة المطبوعة كلٌّ على حدة، مع عرض صورة الصفحة ومواضع الأعلام والتواريخ والاقتباسات والرموز والكسور.
           </p>
 
           {pendingPageSwitchIdx !== null && (
@@ -729,6 +818,12 @@ export default function SourcesImportPage() {
             </div>
           </div>
 
+          {ocrWarning && (
+            <div className="warning-banner">
+              <span>⚠ {ocrWarning}</span>
+            </div>
+          )}
+
           {currentPage?.ocrAmbiguities && currentPage.ocrAmbiguities.length > 0 && (
             <div className="warning-banner">
               <span>
@@ -738,20 +833,70 @@ export default function SourcesImportPage() {
             </div>
           )}
 
-          <div className="form-group">
-            <label className="form-label">
-              النص المستخرج القابل للتصحيح البشري قبل اعتماد الفهرس:
-              {pageDirty && <span className="badge badge-warning" style={{ marginInlineStart: "8px" }}>تعديل غير محفوظ</span>}
-            </label>
-            <textarea
-              className="form-textarea"
-              value={correctedPageText}
-              onChange={(e) => {
-                setCorrectedPageText(e.target.value);
-                setPageDirty(true);
+          <div className="equal-split-grid" style={{ marginBottom: "14px" }}>
+            <div
+              style={{
+                padding: "12px",
+                borderRadius: "10px",
+                border: "1px solid var(--border-color)",
+                backgroundColor: "#fbfcfb",
               }}
-              placeholder="النص المستخرج من الصفحة أو التفريغ اليدوي للصفحة الممسوحة..."
-            />
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "6px", marginBottom: "8px" }}>
+                <span style={{ fontWeight: 700, fontSize: "0.84rem" }}>
+                  معاينة صورة صفحة PDF #{currentPage?.pdfPageNumber}
+                </span>
+                <span
+                  className={`badge ${
+                    currentSource?.extractionStatus === "requires_ocr_or_manual" ? "badge-warning" : "badge-neutral"
+                  }`}
+                >
+                  {currentSource?.extractionStatus === "requires_ocr_or_manual"
+                    ? "صفحة ممسوحة — راجع الصورة"
+                    : "صورة مرجعية للصفحة"}
+                </span>
+              </div>
+              {pageImageLoading ? (
+                <div style={{ padding: "48px 12px", textAlign: "center", color: "var(--text-secondary)", fontSize: "0.84rem" }}>
+                  جارٍ تحميل صورة الصفحة...
+                </div>
+              ) : pageImageUrl ? (
+                <img
+                  src={pageImageUrl}
+                  alt={`معاينة صفحة PDF رقم ${currentPage?.pdfPageNumber}`}
+                  style={{
+                    width: "100%",
+                    maxHeight: "480px",
+                    objectFit: "contain",
+                    borderRadius: "8px",
+                    border: "1px solid var(--border-color)",
+                    backgroundColor: "#ffffff",
+                    display: "block",
+                  }}
+                />
+              ) : (
+                <div style={{ padding: "32px 12px", textAlign: "center", color: "var(--text-secondary)", fontSize: "0.82rem" }}>
+                  {pageImageError || "لا تتوفر صورة معاينة لهذه الصفحة حاليًا."}
+                </div>
+              )}
+            </div>
+
+            <div className="form-group" style={{ marginBottom: 0 }}>
+              <label className="form-label">
+                النص المستخرج القابل للتصحيح البشري قبل اعتماد الفهرس:
+                {pageDirty && <span className="badge badge-warning" style={{ marginInlineStart: "8px" }}>تعديل غير محفوظ</span>}
+              </label>
+              <textarea
+                className="form-textarea"
+                style={{ minHeight: "300px" }}
+                value={correctedPageText}
+                onChange={(e) => {
+                  setCorrectedPageText(e.target.value);
+                  setPageDirty(true);
+                }}
+                placeholder="النص المستخرج من الصفحة أو التفريغ اليدوي للصفحة الممسوحة..."
+              />
+            </div>
           </div>
 
           <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>

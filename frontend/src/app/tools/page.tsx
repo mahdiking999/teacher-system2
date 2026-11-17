@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import Link from "next/link";
 import { useTeacherApp, WorkflowStepper } from "../../components/AppShell";
 
@@ -39,6 +39,8 @@ export default function ToolsAndAidsPage() {
   const [editableToolOutput, setEditableToolOutput] = useState<string>("");
   const [runningTool, setRunningTool] = useState<boolean>(false);
   const [addingToPlan, setAddingToPlan] = useState<boolean>(false);
+  const [savingAid, setSavingAid] = useState<string | null>(null);
+  const savingAidLockRef = useRef<boolean>(false);
   const [feedback, setFeedback] = useState<string>("");
   const [errorMsg, setErrorMsg] = useState<string>("");
 
@@ -90,6 +92,10 @@ export default function ToolsAndAidsPage() {
     selectedTools.includes(aidId) || (aidId === "أوراق عمل فارغة" && selectedTools.includes("أوراق عمل"));
 
   const toggleAid = async (aidId: string) => {
+    if (savingAidLockRef.current || !activeContext) return;
+    savingAidLockRef.current = true;
+    setSavingAid(aidId);
+
     const previous = [...selectedTools];
     const currentlySelected = isAidSelected(aidId);
     let next: string[];
@@ -102,21 +108,22 @@ export default function ToolsAndAidsPage() {
 
     setSelectedTools(next);
     setErrorMsg("");
-    if (activeContext) {
-      try {
-        await apiFetch(`/api/contexts/${activeContextId}`, {
-          method: "PUT",
-          body: JSON.stringify({
-            ...activeContext,
-            selectedTools: next,
-            expectedVersion: activeContext.version,
-          }),
-        });
-        await refreshContexts();
-      } catch (e: any) {
-        setSelectedTools(previous);
-        setErrorMsg(e?.message || "تعذر حفظ تحديث الوسائل التعليمية؛ تم التراجع عن التغيير.");
-      }
+    try {
+      await apiFetch(`/api/contexts/${activeContextId}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          ...activeContext,
+          selectedTools: next,
+          expectedVersion: activeContext.version,
+        }),
+      });
+      await refreshContexts();
+    } catch (e: any) {
+      setSelectedTools(previous);
+      setErrorMsg(e?.message || "تعذر حفظ تحديث الوسائل التعليمية؛ تم التراجع عن التغيير.");
+    } finally {
+      savingAidLockRef.current = false;
+      setSavingAid(null);
     }
   };
 
@@ -250,14 +257,19 @@ export default function ToolsAndAidsPage() {
           <div className="stats-grid-3">
             {CLASSROOM_AIDS.map((aid) => {
               const isSelected = isAidSelected(aid.id);
+              const isSavingThis = savingAid === aid.id;
+              const isBusy = Boolean(savingAid);
               return (
                 <div
                   key={aid.id}
-                  onClick={() => toggleAid(aid.id)}
+                  onClick={() => {
+                    if (!isBusy) toggleAid(aid.id);
+                  }}
                   role="button"
-                  tabIndex={0}
+                  tabIndex={isBusy ? -1 : 0}
+                  aria-disabled={isBusy}
                   onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
+                    if (!isBusy && (e.key === "Enter" || e.key === " ")) {
                       e.preventDefault();
                       toggleAid(aid.id);
                     }
@@ -267,13 +279,15 @@ export default function ToolsAndAidsPage() {
                     borderRadius: "12px",
                     border: isSelected ? "2px solid var(--primary-green)" : "1px solid var(--border-color)",
                     backgroundColor: isSelected ? "var(--primary-tint-bg)" : "#fbfcfb",
-                    cursor: "pointer",
+                    cursor: isBusy ? "wait" : "pointer",
+                    opacity: isBusy && !isSavingThis ? 0.65 : 1,
+                    transition: "opacity 0.15s ease",
                   }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "10px", gap: "6px", flexWrap: "wrap" }}>
                     <span style={{ fontSize: "1.3rem" }}>{aid.icon}</span>
-                    <span className={`badge ${isSelected ? "badge-success" : "badge-neutral"}`}>
-                      {isSelected ? "محدّد" : "غير محدّد"}
+                    <span className={`badge ${isSavingThis ? "badge-warning" : isSelected ? "badge-success" : "badge-neutral"}`}>
+                      {isSavingThis ? "جارٍ الحفظ..." : isSelected ? "محدّد" : "غير محدّد"}
                     </span>
                   </div>
                   <div style={{ fontWeight: 800, fontSize: "1rem", marginBottom: "4px" }}>{aid.title}</div>

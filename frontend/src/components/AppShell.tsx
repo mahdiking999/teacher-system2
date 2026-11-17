@@ -29,17 +29,69 @@ export interface EducationalContextItem {
   version: number;
 }
 
+export interface AiStatusInfo {
+  loading: boolean;
+  available: boolean;
+  configured: boolean;
+  mode: "live" | "fallback";
+  textGenerationReady: boolean;
+  visionGenerationReady: boolean;
+  fallbackAvailable: boolean;
+  model: string;
+  visionModel: string;
+}
+
+export interface SourceStatusSummary {
+  loading: boolean;
+  total: number;
+  verifiedCount: number;
+  pendingCount: number;
+  hasUploadedPdf: boolean;
+  latestTitle: string;
+  latestVerificationStatus: string;
+}
+
+export type UiLang = "ar" | "en" | "fr";
+
 interface AppContextValue {
   contexts: EducationalContextItem[];
   activeContext: EducationalContextItem | null;
   activeContextId: string;
   loadingContext: boolean;
+  uiLang: UiLang;
+  uiIsRtl: boolean;
+  aiStatus: AiStatusInfo;
+  sourceStatus: SourceStatusSummary;
   switchContext: (ctxId: string) => void;
   refreshContexts: () => Promise<void>;
+  refreshAiStatus: () => Promise<void>;
+  refreshSourceStatus: (ctxId?: string) => Promise<void>;
   apiFetch: (path: string, options?: RequestInit) => Promise<any>;
   downloadFile: (path: string, fileName?: string) => Promise<void>;
   openNewContextModal: () => void;
 }
+
+const DEFAULT_AI_STATUS: AiStatusInfo = {
+  loading: true,
+  available: false,
+  configured: false,
+  mode: "fallback",
+  textGenerationReady: false,
+  visionGenerationReady: false,
+  fallbackAvailable: true,
+  model: "",
+  visionModel: "",
+};
+
+const DEFAULT_SOURCE_STATUS: SourceStatusSummary = {
+  loading: false,
+  total: 0,
+  verifiedCount: 0,
+  pendingCount: 0,
+  hasUploadedPdf: false,
+  latestTitle: "",
+  latestVerificationStatus: "pending_review",
+};
 
 const TeacherAppContext = createContext<AppContextValue | null>(null);
 
@@ -56,41 +108,83 @@ function isRtlLanguage(lang?: string): boolean {
   return lower.startsWith("ar") || lower.startsWith("ku") || lower.startsWith("fa") || lower.startsWith("he");
 }
 
+function resolveUiLang(lang?: string): UiLang {
+  const lower = (lang || "ar").toLowerCase();
+  if (lower.startsWith("en")) return "en";
+  if (lower.startsWith("fr")) return "fr";
+  return "ar";
+}
+
+function stripTitlePrefix(name: string): string {
+  let clean = name.trim();
+  const prefixPatterns = [
+    /^(?:الدكتور(?:ة)?|دكتور(?:ة)?|أستاذ(?:ة)?|الأستاذ(?:ة)?|المعلم(?:ة)?|المدرّ?س(?:ة)?)(?:\s+|$)/i,
+    /^(?:د|أ|م)\s*[.\/،:-]\s*/,
+    /^(?:Prof\.|Dr\.|Mr\.|Mrs\.|Ms\.|Mme\.?)\s+/i,
+  ];
+  for (let i = 0; i < 2; i += 1) {
+    for (const pat of prefixPatterns) {
+      clean = clean.replace(pat, "").trim();
+    }
+  }
+  return clean;
+}
+
+function formatAvatarInitials(rawName?: string): string {
+  const trimmed = (rawName || "").trim();
+  if (!trimmed) return "👤";
+  const clean = stripTitlePrefix(trimmed) || trimmed;
+  const words = clean.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "👤";
+  const firstChars = Array.from(words[0]);
+  if (Array.from(clean).length <= 1 || words.length === 1) {
+    return firstChars[0] || "👤";
+  }
+  if (/^[A-Za-z]/.test(words[0])) {
+    const secondChars = Array.from(words[1]);
+    return `${firstChars[0] || ""}${secondChars[0] || ""}`.toUpperCase();
+  }
+  return firstChars[0] || "👤";
+}
+
 const NAV_ITEMS = [
-  { href: "/", labelAr: "لوحة المعلم", labelEn: "Dashboard", icon: "⊞" },
-  { href: "/sources", labelAr: "استيراد كتاب المنهج", labelEn: "Import Curriculum PDF", icon: "📤" },
-  { href: "/curriculum", labelAr: "المنهج", labelEn: "Curriculum", icon: "📖" },
-  { href: "/lessons", labelAr: "اختيار الدرس", labelEn: "Lessons", icon: "☰" },
-  { href: "/tools", labelAr: "الوسائل وأدوات المدرس", labelEn: "Teacher Tools & Aids", icon: "📏" },
-  { href: "/settings", labelAr: "إعداد الخطة", labelEn: "Plan & Context Setup", icon: "⚙" },
-  { href: "/daily-plan", labelAr: "الخطة اليومية", labelEn: "Daily Plan", icon: "📝" },
-  { href: "/weekly-plan", labelAr: "الخطة الأسبوعية", labelEn: "Weekly Plan", icon: "🗓" },
-  { href: "/five-day-plan", labelAr: "خطة خمسة أيام", labelEn: "Five-Day Plan", icon: "📅" },
-  { href: "/review", labelAr: "مراجعة الخطة", labelEn: "Final Plan Review", icon: "✓" },
-  { href: "/reports", labelAr: "التقارير", labelEn: "Reports", icon: "📊" },
-  { href: "/presentations", labelAr: "العروض التقديمية", labelEn: "Presentations & PPTX", icon: "🖥" },
-  { href: "/export-package", labelAr: "تصدير الحزمة", labelEn: "Export Package", icon: "📦" },
+  { href: "/", labelAr: "لوحة المعلم", labelEn: "Dashboard", labelFr: "Tableau de bord", icon: "⊞" },
+  { href: "/sources", labelAr: "استيراد كتاب المنهج", labelEn: "Import Curriculum PDF", labelFr: "Importer le manuel PDF", icon: "📤" },
+  { href: "/curriculum", labelAr: "المنهج", labelEn: "Curriculum", labelFr: "Programme", icon: "📖" },
+  { href: "/lessons", labelAr: "اختيار الدرس", labelEn: "Lessons", labelFr: "Leçons", icon: "☰" },
+  { href: "/tools", labelAr: "الوسائل وأدوات المدرس", labelEn: "Teacher Tools & Aids", labelFr: "Outils pédagogiques", icon: "📏" },
+  { href: "/settings", labelAr: "إعداد الخطة", labelEn: "Plan & Context Setup", labelFr: "Paramètres du contexte", icon: "⚙" },
+  { href: "/daily-plan", labelAr: "الخطة اليومية", labelEn: "Daily Plan", labelFr: "Plan quotidien", icon: "📝" },
+  { href: "/weekly-plan", labelAr: "الخطة الأسبوعية", labelEn: "Weekly Plan", labelFr: "Plan hebdomadaire", icon: "🗓" },
+  { href: "/five-day-plan", labelAr: "خطة خمسة أيام", labelEn: "Five-Day Plan", labelFr: "Plan sur 5 jours", icon: "📅" },
+  { href: "/review", labelAr: "مراجعة الخطة", labelEn: "Final Plan Review", labelFr: "Révision du plan", icon: "✓" },
+  { href: "/reports", labelAr: "التقارير", labelEn: "Reports", labelFr: "Rapports", icon: "📊" },
+  { href: "/presentations", labelAr: "العروض التقديمية", labelEn: "Presentations & PPTX", labelFr: "Présentations PPTX", icon: "🖥" },
+  { href: "/export-package", labelAr: "تصدير الحزمة", labelEn: "Export Package", labelFr: "Exporter le dossier", icon: "📦" },
 ];
 
 export const WORKFLOW_STEPS = [
-  { step: 1, label: "المصدر", href: "/sources" },
-  { step: 2, label: "المنهج", href: "/curriculum" },
-  { step: 3, label: "الدرس", href: "/lessons" },
-  { step: 4, label: "الوسائل", href: "/tools" },
-  { step: 5, label: "الإعداد", href: "/settings" },
-  { step: 6, label: "بناء الخطة", href: "/daily-plan" },
-  { step: 7, label: "المراجعة", href: "/review" },
-  { step: 8, label: "التقارير", href: "/reports" },
-  { step: 9, label: "العروض", href: "/presentations" },
-  { step: 10, label: "التصدير", href: "/export-package" },
+  { step: 1, label: "المصدر", labelEn: "Source", labelFr: "Source", href: "/sources" },
+  { step: 2, label: "المنهج", labelEn: "Curriculum", labelFr: "Programme", href: "/curriculum" },
+  { step: 3, label: "الدرس", labelEn: "Lesson", labelFr: "Leçon", href: "/lessons" },
+  { step: 4, label: "الوسائل", labelEn: "Tools", labelFr: "Outils", href: "/tools" },
+  { step: 5, label: "الإعداد", labelEn: "Setup", labelFr: "Réglages", href: "/settings" },
+  { step: 6, label: "بناء الخطة", labelEn: "Build Plan", labelFr: "Planifier", href: "/daily-plan" },
+  { step: 7, label: "المراجعة", labelEn: "Review", labelFr: "Révision", href: "/review" },
+  { step: 8, label: "التقارير", labelEn: "Reports", labelFr: "Rapports", href: "/reports" },
+  { step: 9, label: "العروض", labelEn: "Slides", labelFr: "Diapos", href: "/presentations" },
+  { step: 10, label: "التصدير", labelEn: "Export", labelFr: "Export", href: "/export-package" },
 ];
 
 export function WorkflowStepper({ activeStep }: { activeStep: number }) {
+  const ctx = useContext(TeacherAppContext);
+  const uiLang: UiLang = ctx?.uiLang || "ar";
   return (
-    <nav className="stepper-bar" aria-label="خطوات العمل">
+    <nav className="stepper-bar" aria-label={uiLang === "en" ? "Workflow steps" : uiLang === "fr" ? "Étapes du travail" : "خطوات العمل"}>
       {WORKFLOW_STEPS.map((st) => {
         const isDone = st.step < activeStep;
         const isCurrent = st.step === activeStep;
+        const labelText = uiLang === "en" ? st.labelEn : uiLang === "fr" ? st.labelFr : st.label;
         return (
           <Link
             key={st.step}
@@ -98,7 +192,7 @@ export function WorkflowStepper({ activeStep }: { activeStep: number }) {
             className={`stepper-item ${isDone ? "done" : ""} ${isCurrent ? "active" : ""}`}
           >
             <span className="step-circle">{isDone ? "✓" : st.step}</span>
-            <span>{st.label}</span>
+            <span>{labelText}</span>
           </Link>
         );
       })}
@@ -126,6 +220,8 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
   const [activeContextId, setActiveContextId] = useState<string>("");
   const [loadingContext, setLoadingContext] = useState<boolean>(true);
   const [contextError, setContextError] = useState<string>("");
+  const [aiStatus, setAiStatus] = useState<AiStatusInfo>(DEFAULT_AI_STATUS);
+  const [sourceStatus, setSourceStatus] = useState<SourceStatusSummary>(DEFAULT_SOURCE_STATUS);
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(false);
   const [showModal, setShowModal] = useState<boolean>(false);
   const [creatingContext, setCreatingContext] = useState<boolean>(false);
@@ -149,6 +245,90 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  const refreshAiStatus = useCallback(async () => {
+    if (!accessPin) {
+      setAiStatus({ ...DEFAULT_AI_STATUS, loading: false });
+      return;
+    }
+    try {
+      const res = await fetch("/api/ai/status", {
+        cache: "no-store",
+        headers: { "X-Pilot-Pin": accessPin },
+      });
+      if (res.status === 401 || res.status === 503) {
+        setAccessPin("");
+        setAccessGranted(false);
+        if (typeof window !== "undefined") window.sessionStorage.removeItem("agy_pilot_pin");
+        return;
+      }
+      if (!res.ok) {
+        setAiStatus({ ...DEFAULT_AI_STATUS, loading: false });
+        return;
+      }
+      const data = await res.json();
+      const isLive = Boolean(
+        data?.mode === "live" ||
+          data?.configured === true ||
+          data?.available === true ||
+          data?.textGenerationReady === true
+      );
+      setAiStatus({
+        loading: false,
+        available: isLive,
+        configured: Boolean(data?.configured ?? isLive),
+        mode: data?.mode === "live" || data?.mode === "fallback" ? data.mode : isLive ? "live" : "fallback",
+        textGenerationReady: Boolean(data?.textGenerationReady ?? isLive),
+        visionGenerationReady: Boolean(data?.visionGenerationReady ?? isLive),
+        fallbackAvailable: data?.fallbackAvailable !== false,
+        model: data?.model || data?.textModel || (isLive ? "NVIDIA NIM" : "توليد منهجي احتياطي"),
+        visionModel: data?.visionModel || (isLive ? "NVIDIA NIM Vision" : "تفريغ يدوي / محلي"),
+      });
+    } catch {
+      setAiStatus({ ...DEFAULT_AI_STATUS, loading: false });
+    }
+  }, [accessPin]);
+
+  const refreshSourceStatus = useCallback(
+    async (ctxIdOverride?: string) => {
+      const targetId = ctxIdOverride ?? activeContextId;
+      if (!accessPin || !targetId) {
+        setSourceStatus(DEFAULT_SOURCE_STATUS);
+        return;
+      }
+      setSourceStatus((prev) => ({ ...prev, loading: true }));
+      try {
+        const res = await fetch(`/api/sources?contextId=${encodeURIComponent(targetId)}`, {
+          cache: "no-store",
+          headers: {
+            "X-Pilot-Pin": accessPin,
+            "X-Active-Context-Id": targetId,
+          },
+        });
+        if (!res.ok) {
+          setSourceStatus((prev) => ({ ...prev, loading: false }));
+          return;
+        }
+        const data = await res.json();
+        const items: any[] = data?.items || [];
+        const verifiedItems = items.filter((s) => s.verificationStatus === "human_verified");
+        const uploadedItems = items.filter((s) => s.extractionStatus && s.extractionStatus !== "no_file");
+        const primary = verifiedItems[0] || items[0] || null;
+        setSourceStatus({
+          loading: false,
+          total: items.length,
+          verifiedCount: verifiedItems.length,
+          pendingCount: Math.max(0, items.length - verifiedItems.length),
+          hasUploadedPdf: uploadedItems.length > 0,
+          latestTitle: primary?.title || "",
+          latestVerificationStatus: primary?.verificationStatus || "pending_review",
+        });
+      } catch {
+        setSourceStatus((prev) => ({ ...prev, loading: false }));
+      }
+    },
+    [accessPin, activeContextId]
+  );
+
   const refreshContexts = useCallback(async () => {
     if (!accessPin) {
       setLoadingContext(false);
@@ -171,6 +351,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
       setContexts(list);
       if (list.length === 0) {
         setActiveContextId("");
+        setSourceStatus(DEFAULT_SOURCE_STATUS);
         if (typeof window !== "undefined") {
           window.localStorage.removeItem("agy_active_context_id");
         }
@@ -182,6 +363,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
         if (typeof window !== "undefined") {
           window.localStorage.setItem("agy_active_context_id", resolvedId);
         }
+        await refreshSourceStatus(resolvedId);
       }
     } catch (err: any) {
       console.error("Failed loading contexts:", err);
@@ -189,7 +371,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoadingContext(false);
     }
-  }, [accessPin]);
+  }, [accessPin, refreshSourceStatus]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -201,10 +383,19 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (accessPin) refreshContexts();
-  }, [accessPin, refreshContexts]);
+    if (accessPin) {
+      refreshContexts();
+      refreshAiStatus();
+    }
+  }, [accessPin, refreshContexts, refreshAiStatus]);
 
   const activeContext = contexts.find((c) => c.id === activeContextId) || (contexts.length > 0 ? contexts[0] : null);
+
+  useEffect(() => {
+    if (accessPin && activeContext?.id) {
+      refreshSourceStatus(activeContext.id);
+    }
+  }, [accessPin, activeContext?.id, refreshSourceStatus]);
 
   useEffect(() => {
     if (activeContext?.teacherName) {
@@ -246,9 +437,11 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
     async (path: string, options: RequestInit = {}) => {
       const currentCtxId = activeContext?.id || activeContextId;
       const headers = new Headers(options.headers || {});
-      headers.set("X-Active-Context-Id", currentCtxId);
+      if (currentCtxId) {
+        headers.set("X-Active-Context-Id", currentCtxId);
+      }
       headers.set("X-Pilot-Pin", accessPin);
-      if (!(options.body instanceof FormData) && !headers.has("Content-Type")) {
+      if (options.body !== undefined && !(options.body instanceof FormData) && !headers.has("Content-Type")) {
         headers.set("Content-Type", "application/json");
       }
       const res = await fetch(path, {
@@ -278,31 +471,46 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
     [activeContext, activeContextId, accessPin]
   );
 
-  const downloadFile = useCallback(async (path: string, fileName?: string) => {
-    const res = await fetch(path, { cache: "no-store", headers: { "X-Pilot-Pin": accessPin } });
-    if (res.status === 401 || res.status === 503) {
-      setAccessPin("");
-      setAccessGranted(false);
-      if (typeof window !== "undefined") window.sessionStorage.removeItem("agy_pilot_pin");
-      throw new Error(res.status === 503 ? "خدمة الوصول غير مهيأة؛ أبلغ المسؤول." : "انتهت جلسة الوصول؛ أدخل الرمز مجددًا.");
-    }
-    if (!res.ok) {
-      throw new Error(`فشل تنزيل الملف (${res.status})`);
-    }
-    const blob = await res.blob();
-    const objectUrl = URL.createObjectURL(blob);
-    const disposition = res.headers.get("Content-Disposition") || "";
-    const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
-    const quotedName = disposition.match(/filename="?([^";]+)"?/i)?.[1];
-    const responseName = encodedName ? decodeURIComponent(encodedName) : quotedName;
-    const link = document.createElement("a");
-    link.href = objectUrl;
-    link.download = fileName || responseName || "download";
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-  }, [accessPin]);
+  const downloadFile = useCallback(
+    async (path: string, fileName?: string) => {
+      const currentCtxId = activeContext?.id || activeContextId;
+      const headers: Record<string, string> = {
+        "X-Pilot-Pin": accessPin,
+      };
+      if (currentCtxId) {
+        headers["X-Active-Context-Id"] = currentCtxId;
+      }
+      const res = await fetch(path, { cache: "no-store", headers });
+      if (res.status === 401 || res.status === 503) {
+        setAccessPin("");
+        setAccessGranted(false);
+        if (typeof window !== "undefined") window.sessionStorage.removeItem("agy_pilot_pin");
+        throw new Error(res.status === 503 ? "خدمة الوصول غير مهيأة؛ أبلغ المسؤول." : "انتهت جلسة الوصول؛ أدخل الرمز مجددًا.");
+      }
+      if (!res.ok) {
+        const ct = res.headers.get("content-type") || "";
+        if (ct.includes("application/json")) {
+          const json = await res.json().catch(() => null);
+          if (json?.message) throw new Error(json.message);
+        }
+        throw new Error(`فشل تنزيل الملف (${res.status})`);
+      }
+      const blob = await res.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const disposition = res.headers.get("Content-Disposition") || "";
+      const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+      const quotedName = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+      const responseName = encodedName ? decodeURIComponent(encodedName) : quotedName;
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = fileName || responseName || "download";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+    },
+    [accessPin, activeContext, activeContextId]
+  );
 
   const handleSubmitPin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -328,6 +536,8 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
     setAccessGranted(false);
     setContexts([]);
     setActiveContextId("");
+    setSourceStatus(DEFAULT_SOURCE_STATUS);
+    setAiStatus({ ...DEFAULT_AI_STATUS, loading: false });
     setLoadingContext(false);
     if (typeof window !== "undefined") window.sessionStorage.removeItem("agy_pilot_pin");
   };
@@ -357,7 +567,9 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
   };
 
   const uiIsRtl = !activeContext || isRtlLanguage(activeContext.language);
+  const uiLang: UiLang = activeContext ? resolveUiLang(activeContext.language) : "ar";
   const displayTeacherName = activeContext ? activeContext.teacherName : savedTeacherName;
+  const avatarInitials = formatAvatarInitials(displayTeacherName);
 
   if (!accessGranted) {
     return (
@@ -389,22 +601,47 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
         activeContext,
         activeContextId: activeContext?.id || activeContextId,
         loadingContext,
+        uiLang,
+        uiIsRtl,
+        aiStatus,
+        sourceStatus,
         switchContext,
         refreshContexts,
+        refreshAiStatus,
+        refreshSourceStatus,
         apiFetch,
         downloadFile,
         openNewContextModal,
       }}
     >
-      <div className="app-shell">
+      <div className="app-shell" dir={uiIsRtl ? "rtl" : "ltr"}>
         {/* Sidebar (#154434) */}
-        <aside className={`app-sidebar ${sidebarOpen ? "open" : ""}`} aria-label="القائمة الجانبية">
+        <aside
+          className={`app-sidebar ${sidebarOpen ? "open" : ""}`}
+          aria-label={uiLang === "en" ? "Sidebar navigation" : uiLang === "fr" ? "Navigation latérale" : "القائمة الجانبية"}
+        >
           <div className="brand-header">
             <div>
               <div className="brand-title">
-                {activeContext?.subject ? `مُعلّم ${activeContext.subject}` : "مساعد المدرس"}
+                {activeContext?.subject
+                  ? uiLang === "en"
+                    ? `\u2068${activeContext.subject}\u2069 Teacher`
+                    : uiLang === "fr"
+                    ? `Enseignant · \u2068${activeContext.subject}\u2069`
+                    : `مُعلّم ${activeContext.subject}`
+                  : uiLang === "en"
+                  ? "Teacher Assistant"
+                  : uiLang === "fr"
+                  ? "Assistant Enseignant"
+                  : "مساعد المدرس"}
               </div>
-              <div className="brand-subtitle">مساحة التخطيط لأي مادة ومنهج</div>
+              <div className="brand-subtitle">
+                {uiLang === "en"
+                  ? "Lesson planning for any subject & curriculum"
+                  : uiLang === "fr"
+                  ? "Planification de cours multi-matières"
+                  : "مساحة التخطيط لأي مادة ومنهج"}
+              </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <div className="brand-icon-box" aria-hidden="true">
@@ -414,7 +651,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
                 type="button"
                 className="sidebar-close-btn"
                 onClick={() => setSidebarOpen(false)}
-                aria-label="إغلاق القائمة الجانبية"
+                aria-label={uiLang === "en" ? "Close sidebar" : uiLang === "fr" ? "Fermer le menu" : "إغلاق القائمة الجانبية"}
               >
                 ✕
               </button>
@@ -422,14 +659,23 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="context-pill-card">
-            <div className="context-pill-grade">{activeContext?.grade || "لم يُحدد سياق بعد"}</div>
+            <div className="context-pill-grade">
+              {activeContext?.grade ||
+                (uiLang === "en" ? "No context selected yet" : uiLang === "fr" ? "Aucun contexte sélectionné" : "لم يُحدد سياق بعد")}
+            </div>
             <div className="context-pill-sub">
-              {activeContext ? `${activeContext.subject} · ${activeContext.country}` : "أي مادة · أي صف · أي بلد"}
+              {activeContext
+                ? `${activeContext.subject} · ${activeContext.country}`
+                : uiLang === "en"
+                ? "Any subject · Any grade · Any country"
+                : uiLang === "fr"
+                ? "Toute matière · Tout niveau · Tout pays"
+                : "أي مادة · أي صف · أي بلد"}
             </div>
             <div style={{ marginTop: "8px", display: "flex", gap: "6px" }}>
               {contexts.length > 0 ? (
                 <select
-                  aria-label="تبديل السياق التعليمي"
+                  aria-label={uiLang === "en" ? "Switch educational context" : uiLang === "fr" ? "Changer de contexte" : "تبديل السياق التعليمي"}
                   value={activeContext?.id || ""}
                   onChange={(e) => switchContext(e.target.value)}
                   style={{
@@ -444,7 +690,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
                 >
                   {contexts.map((c) => (
                     <option key={c.id} value={c.id} style={{ color: "#111" }}>
-                      {c.subject || "بدون مادة"} — {c.grade || "بدون صف"} ({c.country || "—"})
+                      {c.subject || "—"} — {c.grade || "—"} ({c.country || "—"})
                     </option>
                   ))}
                 </select>
@@ -464,15 +710,15 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
                     fontWeight: 700,
                   }}
                 >
-                  + إعداد سياقك التعليمي
+                  {uiLang === "en" ? "+ Setup Educational Context" : uiLang === "fr" ? "+ Configurer un contexte" : "+ إعداد سياقك التعليمي"}
                 </button>
               )}
               {contexts.length > 0 && (
                 <button
                   type="button"
                   onClick={openNewContextModal}
-                  title="إضافة سياق تعليمي جديد"
-                  aria-label="إضافة سياق تعليمي جديد"
+                  title={uiLang === "en" ? "Add new context" : uiLang === "fr" ? "Ajouter un contexte" : "إضافة سياق تعليمي جديد"}
+                  aria-label={uiLang === "en" ? "Add new context" : uiLang === "fr" ? "Ajouter un contexte" : "إضافة سياق تعليمي جديد"}
                   style={{
                     background: "#226650",
                     color: "#fff",
@@ -492,6 +738,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
           <nav className="sidebar-nav">
             {NAV_ITEMS.map((item) => {
               const isActive = pathname === item.href;
+              const label = uiLang === "en" ? item.labelEn : uiLang === "fr" ? item.labelFr : item.labelAr;
               return (
                 <Link
                   key={item.href}
@@ -500,22 +747,94 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
                   className={`sidebar-link ${isActive ? "active" : ""}`}
                 >
                   <span aria-hidden="true">{item.icon}</span>
-                  <span>{uiIsRtl ? item.labelAr : item.labelEn}</span>
+                  <span>{label}</span>
                 </Link>
               );
             })}
           </nav>
 
           <div className="sidebar-source-status">
-            <div style={{ fontWeight: 700, color: "#fff", marginBottom: "2px" }}>
-              {activeContext ? "حالة مصدر المنهج" : "تهيئة السياق"}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "6px", marginBottom: "4px", flexWrap: "wrap" }}>
+              <span style={{ fontWeight: 700, color: "#fff" }}>
+                {activeContext
+                  ? uiLang === "en"
+                    ? "Curriculum Source"
+                    : uiLang === "fr"
+                    ? "Source du programme"
+                    : "حالة مصدر المنهج"
+                  : uiLang === "en"
+                  ? "Context Setup"
+                  : uiLang === "fr"
+                  ? "Configuration"
+                  : "تهيئة السياق"}
+              </span>
+              {activeContext && (
+                <span
+                  className={`badge ${
+                    sourceStatus.verifiedCount > 0
+                      ? "badge-success"
+                      : sourceStatus.total > 0
+                      ? "badge-warning"
+                      : "badge-neutral"
+                  }`}
+                  style={{ fontSize: "0.68rem", padding: "2px 7px" }}
+                >
+                  {sourceStatus.verifiedCount > 0
+                    ? uiLang === "en"
+                      ? "Verified"
+                      : uiLang === "fr"
+                      ? "Vérifiée"
+                      : "موثّق"
+                    : sourceStatus.total > 0
+                    ? uiLang === "en"
+                      ? "Pending"
+                      : uiLang === "fr"
+                      ? "En attente"
+                      : "بانتظار التوثيق"
+                    : uiLang === "en"
+                    ? "No file"
+                    : uiLang === "fr"
+                    ? "Aucun fichier"
+                    : "غير مرفوع"}
+                </span>
+              )}
             </div>
             <div style={{ color: "var(--sidebar-muted)" }}>
-              {activeContext?.edition && activeContext?.year
-                ? `الطبعة: ${activeContext.edition} · السنة: ${activeContext.year}`
-                : activeContext
-                ? "بانتظار رفع ملف كتاب المنهج لتوثيقه."
-                : "أدخل بياناتك وسياقك للبدء."}
+              {!activeContext
+                ? uiLang === "en"
+                  ? "Enter your details and context to begin."
+                  : uiLang === "fr"
+                  ? "Saisissez vos informations pour commencer."
+                  : "أدخل بياناتك وسياقك للبدء."
+                : sourceStatus.verifiedCount > 0
+                ? activeContext.edition && activeContext.year
+                  ? uiLang === "en"
+                    ? `Verified · Edition: ${activeContext.edition} · Year: ${activeContext.year}`
+                    : uiLang === "fr"
+                    ? `Vérifiée · Édition : ${activeContext.edition} · Année : ${activeContext.year}`
+                    : `موثّق · الطبعة: ${activeContext.edition} · السنة: ${activeContext.year}`
+                  : uiLang === "en"
+                  ? `Verified source: ${sourceStatus.latestTitle || "Ready"}`
+                  : uiLang === "fr"
+                  ? `Source vérifiée : ${sourceStatus.latestTitle || "Prête"}`
+                  : `تم توثيق المصدر: ${sourceStatus.latestTitle || "معتمد"}`
+                : sourceStatus.hasUploadedPdf
+                ? uiLang === "en"
+                  ? "PDF uploaded — complete metadata & verify in Sources."
+                  : uiLang === "fr"
+                  ? "PDF importé — complétez et vérifiez dans Sources."
+                  : "تم رفع ملف PDF — أكمل البيانات واعتمده من صفحة المصادر."
+                : activeContext.edition && activeContext.year
+                ? uiLang === "en"
+                  ? `Edition: ${activeContext.edition} · Year: ${activeContext.year} (pending source review)`
+                  : uiLang === "fr"
+                  ? `Édition : ${activeContext.edition} · Année : ${activeContext.year} (en attente)`
+                  : `الطبعة: ${activeContext.edition} · السنة: ${activeContext.year} (بانتظار التوثيق)`
+                : uiLang === "en"
+                ? "Awaiting curriculum PDF upload & verification."
+                : uiLang === "fr"
+                ? "En attente du manuel PDF et de sa vérification."
+                : "بانتظار رفع ملف كتاب المنهج لتوثيقه."}
             </div>
           </div>
         </aside>
@@ -543,9 +862,9 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
                 type="button"
                 className="mobile-menu-btn"
                 onClick={() => setSidebarOpen(!sidebarOpen)}
-                aria-label="فتح القائمة الجانبية"
+                aria-label={uiLang === "en" ? "Open navigation menu" : uiLang === "fr" ? "Ouvrir le menu" : "فتح القائمة الجانبية"}
               >
-                ☰ القائمة
+                {uiLang === "en" ? "☰ Menu" : uiLang === "fr" ? "☰ Menu" : "☰ القائمة"}
               </button>
               {activeContext ? (
                 <span>
@@ -566,12 +885,27 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
                     padding: 0,
                   }}
                 >
-                  لم يتم تحديد سياق بعد — اضغط لإعداد سياقك التعليمي
+                  {uiLang === "en"
+                    ? "No context selected — click to set up"
+                    : uiLang === "fr"
+                    ? "Aucun contexte — cliquez pour configurer"
+                    : "لم يتم تحديد سياق بعد — اضغط لإعداد سياقك التعليمي"}
                 </button>
               )}
               {activeContext?.missingContextFields && activeContext.missingContextFields.length > 0 && (
-                <span className="badge badge-warning" title="الحقول غير المعروفة تُترك فارغة مع تنبيه بدل تخمينها">
-                  تنبيه سياق: ينقص ({activeContext.missingContextFields.join("، ")})
+                <span
+                  className="badge badge-warning"
+                  title={
+                    uiLang === "en"
+                      ? "Unknown fields stay blank instead of being guessed"
+                      : "الحقول غير المعروفة تُترك فارغة مع تنبيه بدل تخمينها"
+                  }
+                >
+                  {uiLang === "en"
+                    ? `Context notice: missing (${activeContext.missingContextFields.join(", ")})`
+                    : uiLang === "fr"
+                    ? `Contexte incomplet : (${activeContext.missingContextFields.join(", ")})`
+                    : `تنبيه سياق: ينقص (${activeContext.missingContextFields.join("، ")})`}
                 </span>
               )}
               {!activeContext && (
@@ -581,17 +915,17 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
                   className="badge badge-success"
                   style={{ cursor: "pointer", border: "none" }}
                 >
-                  + إعداد سياقك التعليمي
+                  {uiLang === "en" ? "+ Setup Context" : uiLang === "fr" ? "+ Configurer" : "+ إعداد سياقك التعليمي"}
                 </button>
               )}
             </div>
 
             <div className="top-bar-user">
-              <div className="avatar-circle">
-                {displayTeacherName?.trim() ? displayTeacherName.trim().slice(0, 2) : "👤"}
+              <div className="avatar-circle" title={displayTeacherName || ""}>
+                {avatarInitials}
               </div>
               <button type="button" className="btn btn-secondary" onClick={handleLogout} style={{ padding: "5px 9px", fontSize: "0.78rem" }}>
-                تسجيل الخروج
+                {uiLang === "en" ? "Sign out" : uiLang === "fr" ? "Déconnexion" : "تسجيل الخروج"}
               </button>
               <span style={{ fontWeight: 600 }}>
                 {displayTeacherName || (
@@ -606,7 +940,17 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
                       fontWeight: 700,
                     }}
                   >
-                    {activeContext ? "اسم المعلم غير محدد" : "أدخل اسمك الكريم"}
+                    {activeContext
+                      ? uiLang === "en"
+                        ? "Teacher name unset"
+                        : uiLang === "fr"
+                        ? "Nom non défini"
+                        : "اسم المعلم غير محدد"
+                      : uiLang === "en"
+                      ? "Enter your name"
+                      : uiLang === "fr"
+                      ? "Saisir votre nom"
+                      : "أدخل اسمك الكريم"}
                   </button>
                 )}
               </span>
@@ -618,7 +962,7 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
               <div className="blocker-banner">
                 <span>⛔ {contextError}</span>
                 <button type="button" className="btn btn-secondary" onClick={refreshContexts}>
-                  ↻ إعادة المحاولة
+                  {uiLang === "en" ? "↻ Retry" : uiLang === "fr" ? "↻ Réessayer" : "↻ إعادة المحاولة"}
                 </button>
               </div>
             )}
@@ -626,12 +970,36 @@ export function AppShellProvider({ children }: { children: React.ReactNode }) {
           </main>
 
           <footer className="app-footer">
-            <span>للتخطيط التربوي · توثيق المصدر مطلوب قبل الاستخدام الرسمي</span>
+            <span>
+              {uiLang === "en"
+                ? "Educational Planning Workspace · Source verification required prior to official use"
+                : uiLang === "fr"
+                ? "Espace de planification · Vérification des sources requise avant usage officiel"
+                : "للتخطيط التربوي · توثيق المصدر مطلوب قبل الاستخدام الرسمي"}
+            </span>
             <span>
               {contextError
-                ? "حالة الخادم: تعذر الاتصال بـ FastAPI"
+                ? uiLang === "en"
+                  ? "Server status: FastAPI unreachable"
+                  : uiLang === "fr"
+                  ? "Serveur : FastAPI inaccessible"
+                  : "حالة الخادم: تعذر الاتصال بـ FastAPI"
                 : activeContext
-                ? `متصل بخدمة التخطيط · عزل السياقات مفعّل (${activeContext.subject})`
+                ? uiLang === "en"
+                  ? `Connected · Context isolation active (\u2068${activeContext.subject}\u2069) · AI: ${
+                      aiStatus.loading ? "..." : aiStatus.mode === "live" ? "Live" : "Fallback"
+                    }`
+                  : uiLang === "fr"
+                  ? `Connecté · Contexte isolé (\u2068${activeContext.subject}\u2069) · IA : ${
+                      aiStatus.loading ? "..." : aiStatus.mode === "live" ? "En ligne" : "Secours"
+                    }`
+                  : `متصل بخدمة التخطيط · عزل السياقات مفعّل (${activeContext.subject}) · الذكاء الاصطناعي: ${
+                      aiStatus.loading ? "..." : aiStatus.mode === "live" ? "متصل حي" : "وضع احتياطي"
+                    }`
+                : uiLang === "en"
+                ? "Awaiting educational context setup"
+                : uiLang === "fr"
+                ? "En attente de configuration du contexte"
                 : "بانتظار إعداد السياق التعليمي"}
             </span>
           </footer>

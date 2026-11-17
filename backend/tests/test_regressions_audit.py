@@ -18,6 +18,15 @@ from backend.app.services.export_service import (
 )
 
 
+def _minimal_valid_pdf_bytes() -> bytes:
+    doc = pymupdf.open()
+    doc.new_page()
+    try:
+        return doc.tobytes()
+    finally:
+        doc.close()
+
+
 def test_pdf_export_preserves_arabic_and_no_mojibake():
     plan_snap = {
         "title": "خطة درس: المعادلات الخطية",
@@ -178,7 +187,7 @@ def test_source_verification_updates_context_and_reaudits_linked_plan(monkeypatc
                 "/api/sources/upload",
                 headers=headers,
                 data={"contextId": context_id, "title": "كتاب الرياضيات"},
-                files={"file": ("synthetic.pdf", b"%PDF-1.7\\n1 0 obj<<>>endobj\\n", "application/pdf")},
+                files={"file": ("synthetic.pdf", _minimal_valid_pdf_bytes(), "application/pdf")},
             )
             assert upload.status_code == 201
             source = upload.json()
@@ -258,7 +267,7 @@ def test_security_revocation_isolation_and_report_docx(monkeypatch):
                 "/api/sources/upload",
                 headers=h1,
                 data={"contextId": ctx1_id, "title": "مصدر 1"},
-                files={"file": ("s1.pdf", b"%PDF-1.7\n1 0 obj<<>>endobj\n", "application/pdf")},
+                files={"file": ("s1.pdf", _minimal_valid_pdf_bytes(), "application/pdf")},
             ).json()
             ch1 = client.post("/api/chapters", headers=h1, json={"contextId": ctx1_id, "sourceId": src1["id"], "title": "فصل 1"}).json()
             les1 = client.post("/api/lessons", headers=h1, json={"contextId": ctx1_id, "sourceId": src1["id"], "chapterId": ch1["id"], "title": "درس 1"}).json()

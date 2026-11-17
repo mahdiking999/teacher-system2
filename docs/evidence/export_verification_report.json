@@ -1,55 +1,62 @@
 {
   "docx": {
     "file": "docs/evidence/sample_exports/sample_daily_plan.docx",
-    "sizeBytes": 4649,
-    "sha256": "cba7e0247a279a169edff741b65187c1e087ca2746105ad0b22c76368bdf8a87",
+    "sizeBytes": 5322,
+    "sha256": "0caa52812cd523886acc2d44e1bdd05a316bba620532108d9ecf6732dbd60742",
     "verification": {
       "passed": true,
       "format": "OOXML_DOCX",
-      "paragraphsOrRunsCount": 112,
+      "paragraphsOrRunsCount": 119,
       "tablesCount": 3,
-      "sha256": "cba7e0247a279a169edff741b65187c1e087ca2746105ad0b22c76368bdf8a87",
-      "sampleText": "درس تجريبي أ | المادة: الرياضيات | الصف/المرحلة: الصف الأول المتوسط | البلد: العراق | المنهج: منهج الرياضيات للمرحلة المتوسطة (سجل تجريبي) | اللغة: ar | السنة: غير مدخلة | الطبعة: غير مدخلة | حالة الإصدار (v1): مسودة غير معتمدة (needs_revision) — لا تحمل ختم اعتماد رسمي | حالة المصدر: unverified_draft | مثال توضيحي غير موثق من الكتاب"
+      "tableGridsCount": 3,
+      "sha256": "0caa52812cd523886acc2d44e1bdd05a316bba620532108d9ecf6732dbd60742",
+      "sampleText": "درس تجريبي أ | المادة: الرياضيات | الصف/المرحلة: الصف الأول المتوسط | البلد: العراق | المنهج: منهج الرياضيات للمرحلة المتوسطة (سجل تجريبي) | اللغة: ar | السنة: غير مدخلة | الطبعة: غير مدخلة | حالة الإصدار (v1): مسودة غير معتمدة (بحاجة إلى تعديل) — لا تحمل ختم اعتماد رسمي | حالة المصدر: مسودة غير موثّقة | مثال توضيحي غير موثق من الكتاب"
     }
   },
   "pdf": {
     "file": "docs/evidence/sample_exports/sample_daily_plan.pdf",
-    "sizeBytes": 10314,
-    "sha256": "a65c06b6d5e5430c1b8b86c20c7def13eed1e3eeaf4d27f44a31c8fb7a99ded2",
+    "sizeBytes": 93132,
+    "sha256": "6e6348a32e0edd62bb3b76c3fae81fe80c73cccd3ddfea0a6f210790b2cbafdd",
     "verification": {
       "passed": true,
       "format": "PDF_1_7",
+      "pagesCount": 2,
       "hasSelectableTextStream": true,
-      "sha256": "a65c06b6d5e5430c1b8b86c20c7def13eed1e3eeaf4d27f44a31c8fb7a99ded2"
+      "controlCharsCount": 0,
+      "mojibakeCharsCount": 0,
+      "sha256": "6e6348a32e0edd62bb3b76c3fae81fe80c73cccd3ddfea0a6f210790b2cbafdd"
     }
   },
   "pptx": {
     "file": "docs/evidence/sample_exports/sample_presentation.pptx",
-    "sizeBytes": 10667,
-    "sha256": "0cbf8729bd0c03c60934add4f6ed0eeba570144634ff6a3b464554922ce50f91",
+    "sizeBytes": 10659,
+    "sha256": "4a5f0217cc9015d6cf17b32d74cc59cbbab251991b24802a55b98586aa3300ed",
     "verification": {
       "passed": true,
       "format": "OOXML_PPTX",
       "slidesCount": 5,
       "editableTextElementsCount": 18,
-      "sha256": "0cbf8729bd0c03c60934add4f6ed0eeba570144634ff6a3b464554922ce50f91"
+      "sha256": "4a5f0217cc9015d6cf17b32d74cc59cbbab251991b24802a55b98586aa3300ed"
     }
   },
   "report_pdf": {
     "file": "docs/evidence/sample_exports/sample_planning_report.pdf",
-    "sizeBytes": 5342,
-    "sha256": "7cc7f957082545448f7c5cebcf001226dc288c17ea141ccae3ad5c847ca6ec9a",
+    "sizeBytes": 26491,
+    "sha256": "4d086a12c379cf9ae896c1cbac13755b4fb837a5065c70f3bbeb29217b8b2db0",
     "verification": {
       "passed": true,
       "format": "PDF_1_7",
+      "pagesCount": 1,
       "hasSelectableTextStream": true,
-      "sha256": "7cc7f957082545448f7c5cebcf001226dc288c17ea141ccae3ad5c847ca6ec9a"
+      "controlCharsCount": 0,
+      "mojibakeCharsCount": 0,
+      "sha256": "4d086a12c379cf9ae896c1cbac13755b4fb837a5065c70f3bbeb29217b8b2db0"
     }
   },
   "bundle_zip": {
     "file": "docs/evidence/sample_exports/sample_full_bundle.zip",
-    "sizeBytes": 18317,
-    "sha256": "e49889ff5c917945c2c440afd1e963d55d670a757f6e311c227ed69976a828bf",
+    "sizeBytes": 114937,
+    "sha256": "84abcf4e78b46a51579f49db44f88c62cc242b8f2c9431076366f968b5760685",
     "verification": {
       "passed": true,
       "format": "BUNDLE_ZIP",
@@ -60,7 +67,7 @@
         "4_planning_completion_report.pdf",
         "5_curriculum_source_metadata.json"
       ],
-      "sha256": "e49889ff5c917945c2c440afd1e963d55d670a757f6e311c227ed69976a828bf"
+      "sha256": "84abcf4e78b46a51579f49db44f88c62cc242b8f2c9431076366f968b5760685"
     }
   }
 }

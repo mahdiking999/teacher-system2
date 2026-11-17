@@ -6,7 +6,7 @@
 
 ## 1. حقيقة الاستضافة وفصل الواجهة عن خدمة Python
 
-- **الواجهة الأمامية (`frontend/`)**: مبنية بـ React 19 وNext.js 16. تعيد توجيه طلبات `/api/*` إلى الخلفية وتمرير ترويسات الوصول اللازمة؛ متغير `NEXT_PUBLIC_API_BASE_URL` ليس سرًا ولا ينبغي وضع بيانات اعتماد فيه.
+- **الواجهة الأمامية (`frontend/`)**: مبنية بـ React 19 وNext.js 16. تمرّر طلبات `/api/*` إلى خدمة FastAPI عبر وسيط App Router ديناميكي في وقت التشغيل (`frontend/src/app/api/[...path]/route.ts`) الذي يقرأ `INTERNAL_API_URL` (أو `NEXT_PUBLIC_API_BASE_URL` ثم `http://127.0.0.1:8000` افتراضيًا) عند كل طلب (`force-dynamic`) بدل تضمينه وقت البناء (`npm run build`). عند التشغيل الموحد عبر `scripts/start_prod.sh` يُضبط `INTERNAL_API_URL="http://127.0.0.1:8000"`، وعند فصل الخدمتين يكفي تعديل `INTERNAL_API_URL` في بيئة التشغيل دون إعادة بناء الواجهة. متغير `NEXT_PUBLIC_API_BASE_URL` ليس سرًا ولا ينبغي وضع بيانات اعتماد فيه.
 - **خلفية Python (`backend/`)**: مبنية بـ **FastAPI** وتعمل عبر **Uvicorn**. قاعدة PostgreSQL والإعدادات الفعلية للنشر الحالي غير متحققة في هذا التدقيق. تخزين الحاوية المحلية على Render غير مضمون الاستمرارية ولا يُعامل كتخزين دائم.
 
 ---
@@ -17,10 +17,17 @@
 | :--- | :--- | :--- | :--- |
 | `DATABASE_URL` | رابط قاعدة البيانات (SQLAlchemy) | `sqlite:///./teacher_system.db` | `postgresql+psycopg2://user:<SECRET>@db-host:5432/teacher_prod` |
 | `ALLOWED_ORIGINS` | قائمة أصول CORS المسموحة مفصولة بفواصل | `http://localhost:3000,http://127.0.0.1:3000` | `https://teacher-ui.example.com` |
-| `NEXT_PUBLIC_API_BASE_URL` | عنوان خدمة FastAPI للواجهة | `http://127.0.0.1:8000` | `https://teacher-api.example.com` |
-| `PILOT_ACCESS_PIN` | رمز وصول تجريبي مشترك مطلوب لكل `/api/*` عدا فحص الصحة | يجب ضبطه محليًا للاختبار | سر غير فارغ في مخزن أسرار Render؛ قيمته الفعلية غير متحققة |
+| `INTERNAL_API_URL` | عنوان خدمة FastAPI الذي يقرأه وسيط Next.js في وقت التشغيل (`force-dynamic`) | `http://127.0.0.1:8000` | `http://127.0.0.1:8000` (حاوية موحدة) أو عنوان الخدمة الداخلية |
+| `NEXT_PUBLIC_API_BASE_URL` | عنوان احتياطي غير سري لواجهة الخلفية عند غياب `INTERNAL_API_URL` | `http://127.0.0.1:8000` | `https://teacher-api.example.com` |
+| `PILOT_ACCESS_PIN` | **إلزامي وغير فارغ في الإنتاج**: رمز وصول تجريبي مشترك مطلوب لكل `/api/*` عدا `/api/health` | يجب ضبطه محليًا قبل التشغيل | سر غير فارغ في مخزن أسرار Render (انظر التحذير أدناه) |
+| `OMNIROUTE_BASE_URL` | عنوان بوابة OmniRoute المتوافقة مع OpenAI API لتوليد الخطط والشرائح وOCR | `http://100.120.103.82:20128/v1` | `http://100.120.103.82:20128/v1` (أو عنوان البوابة الخاص) |
+| `OMNIROUTE_API_KEY` | مفتاح المصادقة لـ OmniRoute (Bearer token) | فارغ محليًا (يعود للمسار الحتمي ما لم يُفعل الوضع بدون مفتاح) | مفتاح سري غير فارغ في مخزن أسرار الإنتاج |
+| `OMNIROUTE_ALLOW_KEYLESS` | اختياري (`1`/`true`) للسماح بالاتصال ببوابة OmniRoute محلية أو عبر Tailscale لا تتطلب `OMNIROUTE_API_KEY` | غير مفعل (`0`) | `1` فقط عند اعتماد بوابة محلية/خاصة موثوقة بدون مفتاح |
+| `NVIDIA_API_KEYS` | اختياري: مفاتيح NVIDIA NIM الاحتياطية مفصولة بفواصل عند تعذر OmniRoute | فارغ | سر في مخزن الأسرار عند الحاجة |
 
-> **تنبيه أمني:** لا يُوضع أي مفتاح خدمة سري أو `DATABASE_URL` داخل متغيرات `NEXT_PUBLIC_*` أو في حزمة المتصفح (frontend bundle).
+> **تحذير حرج حول `PILOT_ACCESS_PIN`:** يجب أن تكون قيمة `PILOT_ACCESS_PIN` **غير فارغة دائمًا في الإنتاج** (وفي التشغيل المحلي). في حال تركها فارغة أو غير معرّفة، يغلق الخادم الوصول تلقائيًا (fail-closed) ويعيد رمز **`503 PILOT_PIN_NOT_CONFIGURED`** لكل مسارات `/api/*` **باستثناء** `GET /api/health` الذي يستمر بإرجاع `200 {"status": "ok"}`؛ مما يعني أن فحوص الجاهزية قد تبدو سليمة بينما التطبيق مقفل بالكامل على المستخدمين. يصدر السكربت `scripts/start_prod.sh` تحذيرًا صريحًا عند الإقلاع إذا كان `PILOT_ACCESS_PIN` فارغًا أو غير مضبوط.
+>
+> **تنبيه أمني:** لا يُوضع أي مفتاح خدمة سري أو `PILOT_ACCESS_PIN` أو `OMNIROUTE_API_KEY` أو `DATABASE_URL` داخل متغيرات `NEXT_PUBLIC_*` أو في حزمة المتصفح (frontend bundle).
 
 ---
 

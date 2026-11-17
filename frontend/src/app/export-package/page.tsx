@@ -187,7 +187,18 @@ function ExportPackageContent() {
         <div className="info-banner" style={{ borderColor: "var(--primary-green)", color: "var(--primary-green)" }}>
           <span>✓ {feedback}</span>
           {lastExportLink && (
-            <button type="button" onClick={() => downloadFile(lastExportLink.url, lastExportLink.fileName)} className="btn btn-secondary" style={{ padding: "4px 10px", fontSize: "0.78rem" }}>
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await downloadFile(lastExportLink.url, lastExportLink.fileName);
+                } catch (err: any) {
+                  setErrorMsg(err?.message || "تعذر تنزيل الملف.");
+                }
+              }}
+              className="btn btn-secondary"
+              style={{ padding: "4px 10px", fontSize: "0.78rem" }}
+            >
               تنزيل {lastExportLink.fileName}
             </button>
           )}
@@ -357,7 +368,7 @@ function ExportPackageContent() {
               فحص OOXML وPDF 1.7 مفعّل
             </span>
             <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>
-              كل ملف مولّد يمر بفحص بنيوي مستقل يتحقق من صلاحية جداول وفقرات `word/document.xml`، وشرائح `ppt/slides/slide*.xml`، وهيكل `%PDF-1.7` قبل تسليمه.
+              كل ملف مولّد يمر بفحص بنيوي مستقل يتحقق من صلاحية جداول وفقرات word/document.xml، وشرائح ppt/slides/slide*.xml، وهيكل %PDF-1.7 قبل تسليمه.
             </p>
           </div>
         </div>
@@ -406,7 +417,13 @@ function ExportPackageContent() {
                     <td>
                       <button
                         type="button"
-                        onClick={() => downloadFile(`/api/exports/${ex.id}/download?contextId=${encodeURIComponent(activeContextId)}`, ex.fileName)}
+                        onClick={async () => {
+                          try {
+                            await downloadFile(`/api/exports/${ex.id}/download?contextId=${encodeURIComponent(activeContextId)}`, ex.fileName);
+                          } catch (err: any) {
+                            setErrorMsg(err?.message || "تعذر تنزيل الملف.");
+                          }
+                        }}
                         className="btn btn-secondary"
                         style={{ padding: "5px 12px", fontSize: "0.78rem" }}
                       >

@@ -20,6 +20,7 @@ function FiveDayPlanContent() {
   const [sources, setSources] = useState<any[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [saving, setSaving] = useState<boolean>(false);
+  const [expandedObjectivesDays, setExpandedObjectivesDays] = useState<Record<number, boolean>>({});
   const [feedback, setFeedback] = useState<string>("");
   const [errorMsg, setErrorMsg] = useState<string>("");
 
@@ -395,6 +396,12 @@ function FiveDayPlanContent() {
             {days.map((d, idx) => {
               const hasLesson = String(d.lessonTitle || "").trim() !== "";
               const hasAssessment = String(d.assessment || "").trim() !== "";
+              const dayObjectivesStr = Array.isArray(d.objectives)
+                ? d.objectives.join("\n")
+                : String(d.objectives || "");
+              const hasObjectives = dayObjectivesStr.trim() !== "";
+              const isObjExpanded = Boolean(expandedObjectivesDays[idx]);
+              const matchedLesson = lessons.find((l) => l.id === d.lessonId);
               return (
                 <div
                   key={idx}
@@ -538,7 +545,67 @@ function FiveDayPlanContent() {
                         {hasLesson && hasAssessment ? "تحرير الحصة ←" : "استكمال الحصة ←"}
                       </Link>
                     </div>
+                    <button
+                      type="button"
+                      className="btn btn-secondary"
+                      style={{ marginTop: "8px", padding: "4px 8px", fontSize: "0.74rem" }}
+                      onClick={() =>
+                        setExpandedObjectivesDays((prev) => ({
+                          ...prev,
+                          [idx]: !prev[idx],
+                        }))
+                      }
+                    >
+                      {isObjExpanded
+                        ? "إخفاء أهداف اليوم"
+                        : hasObjectives
+                        ? "تعديل أهداف اليوم ✓"
+                        : "+ أهداف اليوم (اختياري)"}
+                    </button>
                   </div>
+
+                  {isObjExpanded && (
+                    <div
+                      style={{
+                        gridColumn: "1 / -1",
+                        paddingTop: "10px",
+                        borderTop: "1px dashed var(--border-color)",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "6px" }}>
+                        <label htmlFor={`five-day-obj-${idx}`} className="form-label" style={{ marginBottom: 0 }}>
+                          أهداف اليوم {idx + 1} الاختيارية (كل سطر أو فاصلة)
+                        </label>
+                        {matchedLesson?.objectives?.length > 0 && (
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            style={{ padding: "3px 8px", fontSize: "0.74rem" }}
+                            onClick={() => {
+                              const next = [...days];
+                              next[idx] = { ...next[idx], objectives: matchedLesson.objectives.join("، ") };
+                              setDays(next);
+                            }}
+                          >
+                            ↺ استيراد أهداف الدرس
+                          </button>
+                        )}
+                      </div>
+                      <textarea
+                        id={`five-day-obj-${idx}`}
+                        aria-label={`أهداف اليوم ${idx + 1}`}
+                        className="form-textarea"
+                        style={{ minHeight: "56px" }}
+                        placeholder="أدخل أهداف هذا اليوم مفصولة بفاصلة أو سطر جديد (اختياري)..."
+                        value={dayObjectivesStr}
+                        onChange={(e) => {
+                          const next = [...days];
+                          next[idx] = { ...next[idx], objectives: e.target.value };
+                          setDays(next);
+                        }}
+                      />
+                    </div>
+                  )}
                 </div>
               );
             })}

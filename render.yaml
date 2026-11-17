@@ -26,6 +26,10 @@ services:
         value: "http://127.0.0.1:8000"
       - key: OMNIROUTE_BASE_URL
         value: "http://100.120.103.82:20128/v1"
+      - key: OMNIROUTE_API_KEY
+        sync: false
+      - key: OMNIROUTE_ALLOW_KEYLESS
+        value: "0"
       - key: TAILSCALE_AUTHKEY
         value: ""
       - key: NVIDIA_API_KEYS

@@ -10,7 +10,7 @@ function PresentationsContent() {
   const searchParams = useSearchParams();
   const urlPlanId = searchParams.get("planId") || "";
 
-  const { activeContext, activeContextId, apiFetch, downloadFile } = useTeacherApp();
+  const { activeContext, activeContextId, apiFetch, downloadFile, aiStatus } = useTeacherApp();
   const [plans, setPlans] = useState<any[]>([]);
   const [selectedPlanId, setSelectedPlanId] = useState<string>("");
   const [slides, setSlides] = useState<any[]>([]);
@@ -27,6 +27,7 @@ function PresentationsContent() {
   const [aiGenerating, setAiGenerating] = useState<boolean>(false);
   const [aiSlidesCount, setAiSlidesCount] = useState<number>(6);
   const [aiCustomPrompt, setAiCustomPrompt] = useState<string>("");
+  const [lastAiModelUsed, setLastAiModelUsed] = useState<string>("");
 
   const defaultLangDir = useCallback(() => {
     const lang = (activeContext?.language || "ar").toLowerCase();
@@ -83,7 +84,12 @@ function PresentationsContent() {
   );
 
   const loadPlans = useCallback(
-    async (keepId?: string, keepSlideIdx?: number, isCancelled?: () => boolean) => {
+    async (
+      keepId?: string,
+      keepSlideIdx?: number,
+      isCancelled?: () => boolean,
+      preserveSettings = false
+    ) => {
       if (!activeContextId) {
         setPlans([]);
         setSelectedPlanId("");
@@ -110,13 +116,23 @@ function PresentationsContent() {
             "";
           const found = list.find((p: any) => p.id === targetId) || null;
           if (found) {
-            bindPlanSlides(found, keepSlideIdx);
+            if (preserveSettings) {
+              const nextSlides = found.slides && found.slides.length > 0 ? found.slides : [];
+              setSlides(nextSlides);
+              if (typeof keepSlideIdx === "number" && nextSlides.length > 0) {
+                setActiveSlideIdx(Math.min(keepSlideIdx, nextSlides.length - 1));
+              }
+            } else {
+              bindPlanSlides(found, keepSlideIdx);
+            }
             return found.id;
           }
-          setSlides([]);
-          setPresTitle("عرض الدرس");
-          setTextDirection(defaultLangDir());
-          setLayoutStyle("title_and_content");
+          if (!preserveSettings) {
+            setSlides([]);
+            setPresTitle("عرض الدرس");
+            setTextDirection(defaultLangDir());
+            setLayoutStyle("title_and_content");
+          }
           return "";
         });
       } catch (e: any) {
@@ -137,6 +153,7 @@ function PresentationsContent() {
     setFeedback("");
     setErrorMsg("");
     setAiCustomPrompt("");
+    setLastAiModelUsed("");
     setLastExportLink(null);
     setSelectedPlanId("");
     loadPlans(undefined, undefined, () => cancelled);
@@ -165,6 +182,7 @@ function PresentationsContent() {
           ...currentPlan,
           slides: normalizedSlides,
           presentationSettings: {
+            ...(currentPlan.presentationSettings || {}),
             title: presTitle.trim() || currentPlan.title,
             slidesCount: normalizedSlides.length,
             textDirection,
@@ -236,13 +254,25 @@ function PresentationsContent() {
           customInstructions: aiCustomPrompt,
         }),
       });
-      if (res?.plan?.slides) {
-        setSlides(res.plan.slides);
+      if (res?.plan) {
+        // Update plan version & slides in-place while preserving unsaved Column-3 presentation settings
+        setPlans((prev) => prev.map((p) => (p.id === res.plan.id ? res.plan : p)));
+        if (Array.isArray(res.plan.slides) && res.plan.slides.length > 0) {
+          setSlides(res.plan.slides);
+          setActiveSlideIdx(0);
+        }
+      } else {
+        await loadPlans(currentPlan.id, 0, undefined, true);
       }
-      await loadPlans(currentPlan.id, 0);
       const count = res?.slidesCount ?? res?.plan?.slides?.length ?? aiSlidesCount;
-      const model = res?.modelUsed || "NVIDIA NIM";
-      setFeedback(`تم توليد ${count} شرائح ذكية بنجاح عبر (${model}). يمكنك تعديلها أو تصدير PPTX فورًا.`);
+      const rawModel = String(res?.modelUsed || "");
+      const isFallback = !rawModel || rawModel === "deterministic_fallback";
+      setLastAiModelUsed(isFallback ? "deterministic_fallback" : rawModel);
+      setFeedback(
+        isFallback
+          ? `تم توليد ${count} شرائح عبر القوالب المنهجية الاحتياطية (توليد منهجي احتياطي) لعدم توفر اتصال حي بالذكاء الاصطناعي؛ تم الحفاظ على إعدادات العرض الحالية.`
+          : `تم توليد ${count} شرائح بالذكاء الاصطناعي بنجاح عبر (${rawModel}) مع الحفاظ على إعدادات العرض الحالية.`
+      );
     } catch (err: any) {
       setErrorMsg(err?.message || "تعذر توليد الشرائح بالذكاء الاصطناعي.");
     } finally {
@@ -296,9 +326,20 @@ function PresentationsContent() {
         <div className="info-banner" style={{ borderColor: "var(--primary-green)", color: "var(--primary-green)" }}>
           <span>✓ {feedback}</span>
           {lastExportLink && (
-            <a href={lastExportLink.url} className="btn btn-secondary" style={{ padding: "4px 10px", fontSize: "0.78rem" }}>
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  await downloadFile(lastExportLink.url, lastExportLink.fileName);
+                } catch (err: any) {
+                  setErrorMsg(err?.message || "تعذر تنزيل الملف.");
+                }
+              }}
+              className="btn btn-secondary"
+              style={{ padding: "4px 10px", fontSize: "0.78rem" }}
+            >
               تنزيل {lastExportLink.fileName}
-            </a>
+            </button>
           )}
         </div>
       )}
@@ -345,7 +386,10 @@ function PresentationsContent() {
               value={selectedPlanId}
               onChange={(e) => {
                 const found = plans.find((p) => p.id === e.target.value);
-                if (found) bindPlanSlides(found);
+                if (found) {
+                  bindPlanSlides(found);
+                  setLastAiModelUsed("");
+                }
               }}
             >
               {plans.map((p) => (
@@ -359,12 +403,28 @@ function PresentationsContent() {
           <div className="card" style={{ borderColor: "rgba(23, 107, 82, 0.28)", backgroundColor: "#fcfefd" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "8px", marginBottom: "10px" }}>
               <div>
-                <h3 style={{ fontSize: "1.05rem", fontWeight: 800 }}>✨ توليد الشرائح الذكي عبر OmniRoute / NVIDIA NIM</h3>
+                <h3 style={{ fontSize: "1.05rem", fontWeight: 800 }}>
+                  {aiStatus.mode === "live" ? "✨ توليد الشرائح بالذكاء الاصطناعي" : "✨ توليد شرائح الدرس (الوضع المنهجي الاحتياطي)"}
+                </h3>
                 <p style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
-                  ينشئ شرائح عرض تعليمية متكاملة انطلاقًا من أهداف الخطة ومراحلها مع قابلية التحرير الفوري قبل التصدير.
+                  ينشئ شرائح عرض تعليمية انطلاقًا من أهداف الخطة ومراحلها مع الحفاظ على إعدادات العرض وتحريرها قبل التصدير.
                 </p>
               </div>
-              <span className="badge badge-neutral">{currentPlan?.title || "الخطة المحددة"}</span>
+              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap", alignItems: "center" }}>
+                <span className={`badge ${aiStatus.loading ? "badge-neutral" : aiStatus.mode === "live" ? "badge-success" : "badge-warning"}`}>
+                  {aiStatus.loading
+                    ? "جارٍ فحص حالة الذكاء الاصطناعي..."
+                    : aiStatus.mode === "live"
+                    ? `متصل بالذكاء الاصطناعي الحي (${aiStatus.model})`
+                    : "وضع احتياطي محلي (بدون بوابة ذكاء اصطناعي)"}
+                </span>
+                {lastAiModelUsed && (
+                  <span className={`badge ${lastAiModelUsed === "deterministic_fallback" ? "badge-warning" : "badge-success"}`}>
+                    {lastAiModelUsed === "deterministic_fallback" ? "توليد منهجي احتياطي" : `توليد بالذكاء الاصطناعي (${lastAiModelUsed})`}
+                  </span>
+                )}
+                <span className="badge badge-neutral">{currentPlan?.title || "الخطة المحددة"}</span>
+              </div>
             </div>
 
             <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" }}>
@@ -400,7 +460,13 @@ function PresentationsContent() {
                 disabled={aiGenerating || !currentPlan}
                 onClick={handleAiGenerateSlides}
               >
-                {aiGenerating ? "جارٍ توليد الشرائح عبر NVIDIA NIM..." : "✨ توليد شرائح الدرس بالذكاء الاصطناعي"}
+                {aiGenerating
+                  ? aiStatus.mode === "live"
+                    ? "جارٍ توليد الشرائح بالذكاء الاصطناعي..."
+                    : "جارٍ توليد الشرائح الاحتياطية..."
+                  : aiStatus.mode === "live"
+                  ? "✨ توليد شرائح الدرس بالذكاء الاصطناعي"
+                  : "✨ توليد شرائح منهجية احتياطية"}
               </button>
             </div>
           </div>
@@ -653,8 +719,9 @@ function PresentationsContent() {
               <h3 style={{ fontSize: "1.1rem", fontWeight: 800, marginBottom: "12px" }}>إعدادات العرض</h3>
 
               <div className="form-group">
-                <label className="form-label">عنوان العرض</label>
+                <label className="form-label" htmlFor="pres-title-input">عنوان العرض</label>
                 <input
+                  id="pres-title-input"
                   className="form-input"
                   value={presTitle}
                   onChange={(e) => setPresTitle(e.target.value)}
@@ -662,13 +729,14 @@ function PresentationsContent() {
               </div>
 
               <div className="form-group">
-                <label className="form-label">عدد الشرائح</label>
-                <input className="form-input" readOnly value={`${slides.length} شرائح`} />
+                <label className="form-label" htmlFor="pres-slides-count">عدد الشرائح</label>
+                <input id="pres-slides-count" className="form-input" readOnly value={`${slides.length} شرائح`} />
               </div>
 
               <div className="form-group">
-                <label className="form-label">اتجاه النص</label>
+                <label className="form-label" htmlFor="pres-direction-select">اتجاه النص</label>
                 <select
+                  id="pres-direction-select"
                   className="form-select"
                   value={textDirection}
                   onChange={(e) => setTextDirection(e.target.value)}

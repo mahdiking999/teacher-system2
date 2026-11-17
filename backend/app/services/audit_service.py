@@ -57,6 +57,15 @@ def safe_eval_math_expression(expr_str: str) -> float:
     return _eval(tree)
 
 
+VALID_SUBJECT_TOOLS = frozenset({
+    "math_solver",
+    "text_analysis",
+    "historical_timeline",
+    "science_experiment",
+    "worksheet_generator",
+})
+
+
 def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str, Any]) -> Dict[str, Any]:
     """
     Executes subject-appropriate teacher tools with domain validation:
@@ -66,11 +75,15 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
     - science_experiment: validates hypothesis, variables, safety precautions, units, and step-by-step observation protocol.
     - worksheet_generator: generates structured editable worksheet items tailored to the subject without forcing math equations on non-math subjects.
     """
+    normalized_tool_type = tool_type.strip() if isinstance(tool_type, str) else ""
+    if normalized_tool_type not in VALID_SUBJECT_TOOLS:
+        raise ValueError(f"نوع الأداة التخصصية غير معروف: {tool_type!r}")
+
     is_doc_src = bool(inputs.get("isDocumentedSource", False))
     src_ref = str(inputs.get("sourceRef") or "").strip()
     provenance = f"مرتبط بالمصدر الموثق ({src_ref})" if (is_doc_src and src_ref) else ("مرتبط بالمصدر المعتمد" if is_doc_src else "مثال توضيحي غير موثق من الكتاب")
 
-    if tool_type == "math_solver":
+    if normalized_tool_type == "math_solver":
         expression = str(inputs.get("expression") or "").strip()
         claimed_answer = inputs.get("claimedAnswer", None)
         unit = str(inputs.get("unit") or "").strip()
@@ -137,7 +150,7 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
             },
         }
 
-    if tool_type == "text_analysis":
+    if normalized_tool_type == "text_analysis":
         passage = str(inputs.get("passage") or "").strip()
         author_or_source = str(inputs.get("authorOrSource") or "").strip()
         literary_focus = str(inputs.get("focus") or "الفكرة الرئيسة والدلالات اللغوية والبلاغية").strip()
@@ -180,7 +193,7 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
             },
         }
 
-    if tool_type == "historical_timeline":
+    if normalized_tool_type == "historical_timeline":
         events: List[Dict[str, Any]] = inputs.get("events", [])
         if not events or not isinstance(events, list) or len(events) < 2:
             return {
@@ -256,7 +269,7 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
             },
         }
 
-    if tool_type == "science_experiment":
+    if normalized_tool_type == "science_experiment":
         hypothesis = str(inputs.get("hypothesis") or "").strip()
         variables = str(inputs.get("variables") or "").strip()
         safety = str(inputs.get("safety") or "ارتداء النظارات الواقية وإشراف المعلم").strip()
@@ -292,29 +305,31 @@ def run_subject_tool(subject: str, tool_type: str, title: str, inputs: Dict[str,
             },
         }
 
-    # Default: worksheet_generator suitable for any subject
-    topic = title or str(inputs.get("topic", subject or "الدرس الحالي")).strip()
-    questions_prompt = str(inputs.get("prompt", "أسئلة متدرجة تراعي الفروق الفردية")).strip()
-    rubric = str(inputs.get("rubric", "معيار تقييم واضح يربط الأداء بالهدف التعليمي")).strip()
-    output_text = (
-        f"ورقة عمل صفية ({provenance}) — الموضوع: {topic}\n"
-        f"1. سؤال التهيئة (استدعاء المعرفة السابقة): اشرح بكلماتك المفهوم الأساسي المتعلق بـ «{topic}».\n"
-        f"2. مهمة التطبيق ({questions_prompt}): طبّق ما تعلمته في موقف جديد مع تعليل الخطوات أو ذكر الدليل.\n"
-        f"3. معيار التقويم (Rubric): {rubric}"
-    )
-    return {
-        "valid": True,
-        "errorCode": None,
-        "message": "تم توليد مسودة ورقة عمل قابلة للتحرير والإضافة للخطة.",
-        "provenanceLabel": provenance,
-        "editableOutput": output_text,
-        "subjectItem": {
-            "domain": "general",
-            "topic": topic,
-            "rubric": rubric,
-            "provenance": provenance,
-        },
-    }
+    if normalized_tool_type == "worksheet_generator":
+        topic = title or str(inputs.get("topic", subject or "الدرس الحالي")).strip()
+        questions_prompt = str(inputs.get("prompt", "أسئلة متدرجة تراعي الفروق الفردية")).strip()
+        rubric = str(inputs.get("rubric", "معيار تقييم واضح يربط الأداء بالهدف التعليمي")).strip()
+        output_text = (
+            f"ورقة عمل صفية ({provenance}) — الموضوع: {topic}\n"
+            f"1. سؤال التهيئة (استدعاء المعرفة السابقة): اشرح بكلماتك المفهوم الأساسي المتعلق بـ «{topic}».\n"
+            f"2. مهمة التطبيق ({questions_prompt}): طبّق ما تعلمته في موقف جديد مع تعليل الخطوات أو ذكر الدليل.\n"
+            f"3. معيار التقويم (Rubric): {rubric}"
+        )
+        return {
+            "valid": True,
+            "errorCode": None,
+            "message": "تم توليد مسودة ورقة عمل قابلة للتحرير والإضافة للخطة.",
+            "provenanceLabel": provenance,
+            "editableOutput": output_text,
+            "subjectItem": {
+                "domain": "general",
+                "topic": topic,
+                "rubric": rubric,
+                "provenance": provenance,
+            },
+        }
+
+    raise ValueError(f"نوع الأداة التخصصية غير معروف: {tool_type!r}")
 
 
 def audit_plan_and_context(
@@ -459,20 +474,43 @@ def audit_plan_and_context(
     else:
         # Weekly or five_day plan schedule check
         days = plan_data.get("scheduleDays", [])
-        unscheduled = [d.get("dayName", "") for d in days if isinstance(d, dict) and not d.get("isHoliday") and not str(d.get("lessonTitle") or "").strip()]
         teaching_days = [d for d in days if isinstance(d, dict) and not d.get("isHoliday")]
+        unscheduled: List[str] = []
+        missing_assessment_days: List[str] = []
+        zero_duration_days: List[str] = []
         negative_day_min = False
         total_min = 0
-        for d in teaching_days:
+
+        for idx, d in enumerate(teaching_days, start=1):
+            day_label = str(d.get("dayName") or f"اليوم {d.get('dayNumber') or idx}").strip()
+            if not str(d.get("lessonTitle") or "").strip():
+                unscheduled.append(day_label)
+            if not str(d.get("assessment") or "").strip():
+                missing_assessment_days.append(day_label)
+
+            if "durationMinutes" in d and d.get("durationMinutes") is not None:
+                raw_dm = d.get("durationMinutes")
+            elif "minutes" in d and d.get("minutes") is not None:
+                raw_dm = d.get("minutes")
+            else:
+                raw_dm = 0
+
             try:
-                dm = int(float(d.get("minutes") if d.get("minutes") is not None else period_minutes))
+                dm = int(float(raw_dm))
             except (ValueError, TypeError):
                 dm = -1
+
             if dm < 0:
                 negative_day_min = True
-            total_min += max(0, dm)
+            elif dm <= 0:
+                zero_duration_days.append(day_label)
+            else:
+                total_min += dm
+
+        has_schedule_blocker = False
 
         if not days:
+            has_schedule_blocker = True
             add_finding(
                 category="BLOCKER",
                 severity="critical",
@@ -483,40 +521,81 @@ def audit_plan_and_context(
                 remediation="أضف أيام التدريس وحدد الدرس والهدف والتقويم لكل يوم.",
                 evidence="scheduleDays=[]",
             )
-        elif negative_day_min:
-            add_finding(
-                category="BLOCKER",
-                severity="critical",
-                code="NEGATIVE_SCHEDULE_DURATION",
-                title="زمن سالب في أحد أيام الجدول",
-                description="لا يجوز إدخال مدة زمنية سالبة لأي يوم تدريس.",
-                field_target="scheduleDays",
-                remediation="صحح أزمنة الأيام لتكون موجبة.",
-                evidence=str(days),
-            )
-        elif plan_type == "five_day" and len(teaching_days) < 5:
-            add_finding(
-                category="BLOCKER",
-                severity="critical",
-                code="INCOMPLETE_FIVE_DAY_COUNT",
-                title="خطة خمسة أيام لا تحتوي على 5 أيام تدريس",
-                description=f"عدد أيام التدريس الفعلية حاليًا ({len(teaching_days)}) أقل من 5 أيام تدريس متميزة.",
-                field_target="scheduleDays",
-                remediation="أضف 5 أيام تدريس متميزة غير معطّلة في خطة الخمسة أيام.",
-                evidence=f"teaching_days={len(teaching_days)}",
-            )
-        elif unscheduled:
-            add_finding(
-                category="BLOCKER",
-                severity="critical",
-                code="UNSCHEDULED_TEACHING_DAYS",
-                title="أيام تدريس غير مكتملة الجدولة",
-                description=f"قبل اعتماد الخطة: حدد دروس وأنشطة الأيام التالية أو علّمها كعطلة: {'، '.join(unscheduled)}.",
-                field_target="scheduleDays",
-                remediation="استكمل بيانات الحصص للأيام غير المجدولة.",
-                evidence=f"Unscheduled: {unscheduled}",
-            )
         else:
+            if len(teaching_days) == 0:
+                has_schedule_blocker = True
+                add_finding(
+                    category="BLOCKER",
+                    severity="critical",
+                    code="NO_TEACHING_DAYS",
+                    title="لا توجد أيام تدريس فعلية في الجدول",
+                    description="جميع أيام الجدول معلّمة كعطلة أو لا توجد أيام تدريس نشطة؛ يجب وجود يوم تدريس واحد على الأقل.",
+                    field_target="scheduleDays",
+                    remediation="فعّل يوم تدريس واحدًا على الأقل (غير عطلة) وأكمل بياناته.",
+                    evidence=f"teaching_days=0, total_days={len(days)}",
+                )
+            if negative_day_min:
+                has_schedule_blocker = True
+                add_finding(
+                    category="BLOCKER",
+                    severity="critical",
+                    code="NEGATIVE_SCHEDULE_DURATION",
+                    title="زمن سالب في أحد أيام الجدول",
+                    description="لا يجوز إدخال مدة زمنية سالبة لأي يوم تدريس.",
+                    field_target="scheduleDays",
+                    remediation="صحح أزمنة الأيام لتكون موجبة.",
+                    evidence=str(days),
+                )
+            for day_label in zero_duration_days:
+                has_schedule_blocker = True
+                add_finding(
+                    category="BLOCKER",
+                    severity="critical",
+                    code="ZERO_SCHEDULE_DURATION",
+                    title=f"زمن يوم التدريس ({day_label}) يساوي صفرًا",
+                    description=f"المدة المخصصة ليوم التدريس «{day_label}» يجب أن تكون أكبر من صفر دقيقة.",
+                    field_target="scheduleDays",
+                    remediation="أدخل مدة زمنية موجبة (بالدقائق) لكل يوم تدريس نشط.",
+                    evidence=f"day={day_label}, duration<=0",
+                )
+            if plan_type == "five_day" and len(teaching_days) < 5:
+                has_schedule_blocker = True
+                add_finding(
+                    category="BLOCKER",
+                    severity="critical",
+                    code="INCOMPLETE_FIVE_DAY_COUNT",
+                    title="خطة خمسة أيام لا تحتوي على 5 أيام تدريس",
+                    description=f"عدد أيام التدريس الفعلية حاليًا ({len(teaching_days)}) أقل من 5 أيام تدريس متميزة.",
+                    field_target="scheduleDays",
+                    remediation="أضف 5 أيام تدريس متميزة غير معطّلة في خطة الخمسة أيام.",
+                    evidence=f"teaching_days={len(teaching_days)}",
+                )
+            if unscheduled:
+                has_schedule_blocker = True
+                add_finding(
+                    category="BLOCKER",
+                    severity="critical",
+                    code="UNSCHEDULED_TEACHING_DAYS",
+                    title="أيام تدريس غير مكتملة الجدولة",
+                    description=f"قبل اعتماد الخطة: حدد دروس وأنشطة الأيام التالية أو علّمها كعطلة: {'، '.join(unscheduled)}.",
+                    field_target="scheduleDays",
+                    remediation="استكمل بيانات الحصص للأيام غير المجدولة.",
+                    evidence=f"Unscheduled: {unscheduled}",
+                )
+            for day_label in missing_assessment_days:
+                has_schedule_blocker = True
+                add_finding(
+                    category="BLOCKER",
+                    severity="critical",
+                    code="MISSING_DAY_ASSESSMENT",
+                    title=f"تقويم يوم التدريس ({day_label}) مفقود",
+                    description=f"قبل اكتمال الخطة: أضف تقويمًا ليوم التدريس «{day_label}».",
+                    field_target="scheduleDays",
+                    remediation="أدخل وسيلة أو سؤال التقويم لكل يوم تدريس نشط.",
+                    evidence=f"day={day_label}, assessment=''",
+                )
+
+        if not has_schedule_blocker:
             add_finding(
                 category="PASSED",
                 severity="info",
